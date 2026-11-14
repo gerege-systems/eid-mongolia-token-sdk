@@ -726,10 +726,11 @@ final class FetcherTests: XCTestCase {
         }
     }
 
+    /// Content-Length over the cap: refused (before or while reading the body — either way `tooLarge`).
     func testAnnouncedLengthOverTheCap() async throws {
         let server = try await LoopbackHTTPServer(answer: { _ in
-            [LoopbackHTTPServer.Chunk("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n"),
-             LoopbackHTTPServer.Chunk("x", delay: 2)]
+            [LoopbackHTTPServer.Chunk("HTTP/1.1 200 OK\r\nContent-Length: 5000\r\nConnection: close\r\n\r\n"
+                                      + String(repeating: "x", count: 5000))]
         })
         defer { server.stop() }
         do {
