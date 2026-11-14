@@ -24,13 +24,15 @@
 - **What (.NET 10):** `windows/` targets .NET 10 (`global.json` 10.0.400, latestFeature); Windows App SDK 2.6.5,
   Windows SDK BuildTools 10.0.28000.2957, Microsoft.NET.Test.Sdk 18.12.0, xunit 2.9.3, xunit.runner.visualstudio 3.1.5;
   Pkcs11Interop unchanged (5.2.0). `EidTokenTest.Core` builds without implicit usings.
-- **What (Windows app, blank window):** the published unpackaged WinUI 3 app opened with an empty content area — the
-  publish folder lacked the PRI index / compiled XAML (`*.pri`, `*.xbf`) that MRT Core loads; the App project now
-  copies them into the publish folder (and `resources.pri`). Startup errors are no longer silent: written to stderr and
+- **What (Windows app, blank window):** the published unpackaged WinUI 3 app opened with an empty content area; its
+  publish folder had no compiled XAML (`*.xbf`) although the build output has them (`App.xbf`, `MainWindow.xbf`,
+  `eid-token-test.pri`). The App project now copies every `*.pri` / `*.xbf` of the build output into the publish
+  folder (and the app PRI as `resources.pri`, the name MRT Core looks for first). Startup errors are no longer silent: written to stderr and
   `eid-token-test.log`, shown in a code-built error window or a message box; the main page writes
   `main page loaded`. CI: UI smoke test of the published app through UI Automation (headings, «Дахин унших»,
   «Токен олдсонгүй»; screenshot + log on failure), a static check of `resources.pri` / `App.xbf` / `MainWindow.xbf`,
-  and a macOS launch check (the app stays up and writes the same marker).
+  and a macOS launch check (the app stays up; the same marker is required when the runner has a GUI session — the
+  current macOS runner runs as a launchd daemon, so there only start + stay up is checked, with a warning).
 - **README:** origin is a server constant (never from request headers), licence, pin / chain rules, rejected-input row,
   shared transport sample, Swift = Apple platforms (ATS exception), Releases instead of PR artifacts, macOS
   quarantine before the first run and the «eid-token-check хариу өгөхгүй гацсан» entry.
