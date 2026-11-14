@@ -169,7 +169,8 @@ public sealed class LoginVerifier
     /// subjectPublicKeyInfo is id-ecPublicKey on the named curve P-256.
     internal static bool IsP256(X509Certificate2 certificate) =>
         certificate.PublicKey.Oid.Value == EcPublicKeyOid
-        && certificate.PublicKey.EncodedParameters.RawData.AsSpan().SequenceEqual(P256Parameters);
+        && certificate.PublicKey.EncodedParameters is { } parameters
+        && parameters.RawData.AsSpan().SequenceEqual(P256Parameters);
 
     /// 1 ≤ x ≤ n − 1 for a 32-byte big-endian scalar.
     internal static bool IsValidScalar(ReadOnlySpan<byte> x) =>
