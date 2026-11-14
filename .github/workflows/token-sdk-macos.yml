@@ -100,26 +100,19 @@ jobs:
           codesign --verify --deep --strict "$app"
           lipo -info "$app/Contents/Frameworks/opensc-pkcs11.so"
           echo "APP_PATH=$app" >> "$GITHUB_ENV"
-      # The built app starts on this runner through LaunchServices (`open`), stays up and renders its main window:
-      # "main page loaded" in its log, written from the window's onAppear — the same marker as on Windows. That needs
-      # the runner to live in a logged-in GUI (Aqua) session; without one, macOS cannot show any window, so only
-      # "starts and stays up for 15 s" is checked and a warning says so. The app is stopped by its own PID.
+      # The built app starts on this runner, stays up and renders its main window: "main page loaded" in its log,
+      # written from the window's onAppear — the same marker as on Windows. Rendering needs a logged-in GUI (Aqua)
+      # session; a runner installed as a launchd daemon (session "System") cannot show any window — there only "starts
+      # and stays up for 15 s" is checked and a warning says so. The app is stopped by its own PID.
       - name: launch check (app)
         run: |
           log="$RUNNER_TEMP/eid-token-test-launch.log"
           out="$RUNNER_TEMP/eid-token-test-launch.out"
-          bin="$APP_PATH/Contents/MacOS/eID Token Test"
           rm -f "$log" "$out"
           session="$(launchctl managername 2>/dev/null || echo unknown)"
           echo "launchd session: $session"
-          open -n -g --env "EID_TOKEN_TEST_LOG=$log" --stdout "$out" --stderr "$out" "$APP_PATH"
-          pid=""
-          for _ in $(seq 1 20); do
-            pid="$(pgrep -n -f "$bin" || true)"
-            [ -n "$pid" ] && break
-            sleep 0.5
-          done
-          [ -n "$pid" ] || { echo "::error::the app did not start"; cat "$out" 2>/dev/null; exit 1; }
+          EID_TOKEN_TEST_LOG="$log" "$APP_PATH/Contents/MacOS/eID Token Test" >"$out" 2>&1 &
+          pid=$!
           echo "app PID $pid"
           ok=true
           if [ "$session" = Aqua ]; then
@@ -130,12 +123,12 @@ jobs:
             done
             grep -q 'main page loaded' "$log" 2>/dev/null || { echo "::error::no 'main page loaded' within 60 s"; ok=false; }
           else
-            echo "::warning::runner is not in a GUI (Aqua) session — the window cannot be shown here; checking that the app starts and stays up only"
+            echo "::warning::runner session is '$session', not a GUI (Aqua) session: no window can be shown here, so only start + stay up is checked (the 'main page loaded' marker needs a runner in a logged-in GUI session)"
             sleep 15
           fi
           kill -0 "$pid" 2>/dev/null || { echo "::error::the app exited"; ok=false; }
           kill "$pid" 2>/dev/null || true
-          for _ in $(seq 1 10); do kill -0 "$pid" 2>/dev/null || break; sleep 0.5; done
+          wait "$pid" 2>/dev/null || true
           echo "--- log"; cat "$log" 2>/dev/null || true
           echo "--- stdout/stderr"; tail -n 40 "$out" 2>/dev/null || true
           $ok
