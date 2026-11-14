@@ -4,7 +4,7 @@
        response is generated inside the tests; nothing reaches a real OCSP responder or CRL server (fake transport,
        or a one-shot server on the loopback interface). -->
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>

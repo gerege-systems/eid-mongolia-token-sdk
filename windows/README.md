@@ -3,11 +3,11 @@
 Бүрэн гарын авлага (нэвтрэлтийн дүрэм, модуль ашиглах, command-line хэрэгсэл, алдаа засах, лиценз) нь репогийн үндсэн
 [`README.md`](../README.md)-д (zip-д `README.md`). Энэ файл зөвхөн Windows-ийн багцын бүтэц ба эх кодын байршлыг заана.
 
-## Zip (`eid-token-test-windows-x64`)
+## Zip (`eid-token-test-windows-x64.zip`, GitHub Releases)
 
 | Зам | Юу вэ |
 |---|---|
-| `eid-token-test.exe` (+ `*.dll`, `*.pri`) | WinUI 3 тест апп, self-contained (.NET 8 + Windows App SDK), x64 |
+| `eid-token-test.exe` (+ `*.dll`, `*.pri`) | WinUI 3 тест апп, self-contained (.NET 10 + Windows App SDK), x64 |
 | `opensc\opensc-pkcs11.dll`, `opensc\COPYING`, `opensc\OPENSSL-LICENSE.txt` | OpenSC 0.26.1 PKCS#11 модуль ба лиценз |
 | `eid-token-check\eid-token-check.exe` (+ runtime) | Command-line хэрэгсэл, self-contained (win-x64) |
 | `eid-token-check\opensc-pkcs11.dll`, `COPYING`, `OPENSSL-LICENSE.txt` | Ижил модуль, хэрэгслийн хажууд |
