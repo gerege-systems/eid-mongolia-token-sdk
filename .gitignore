@@ -1,0 +1,21 @@
+.DS_Store
+.scratch/
+
+# macOS (XcodeGen output, SwiftPM / Xcode build products)
+*.xcodeproj/
+macos/Info.plist
+.build/
+.swiftpm/
+build/
+DerivedData/
+macos/.opensc/
+
+# Windows (.NET build products)
+bin/
+obj/
+out/
+publish/
+artifacts/
+TestResults/
+*.user
+.vs/
