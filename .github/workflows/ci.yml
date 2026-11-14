@@ -1,12 +1,15 @@
-# ci — every pull request:
+# ci — every pull request, one workflow run:
 #
 #   changelog — the PR adds a changelog.d/<YYYY-MM-DD>-<topic>.md fragment and does not touch CHANGELOG.md
 #               (CHANGELOG.md is assembled on main only; concurrent PRs would conflict on it)
-#   gate      — the single summary check (skipped jobs pass, failed / cancelled ones do not)
+#   macos     — token-sdk-macos.yml (unit tests, app, eid-token-check, zip); runs only when vars.EID_MACOS_RUNNER is set
+#   windows   — token-sdk-windows.yml (unit tests, app, eid-token-check.exe, zip)
+#   gate      — the single required check. It needs all three and passes ONLY when each of them succeeded:
+#               a failed, cancelled or SKIPPED platform job (e.g. EID_MACOS_RUNNER unset) fails the gate. The platform
+#               jobs are not path-filtered, so "not triggered" cannot happen; on workflow_dispatch (no PR) the changelog
+#               job is skipped by design and that one skip is accepted.
 #
-# The platform builds and tests run in token-sdk-macos.yml and token-sdk-windows.yml.
-#
-# Runner for these light jobs: `vars.EID_LIGHT_RUNNER` (JSON); unset → GitHub-hosted "ubuntu-24.04".
+# Runner for the light jobs: `vars.EID_LIGHT_RUNNER` (JSON); unset → GitHub-hosted "ubuntu-24.04".
 name: ci
 
 on:
@@ -46,14 +49,33 @@ jobs:
           fi
           echo "$added"
 
+  macos:
+    if: vars.EID_MACOS_RUNNER != ''
+    uses: ./.github/workflows/token-sdk-macos.yml
+
+  windows:
+    uses: ./.github/workflows/token-sdk-windows.yml
+
   gate:
     if: always()
-    needs: [changelog]
+    needs: [changelog, macos, windows]
     runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 5
     steps:
-      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+      - shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          CHANGELOG: ${{ needs.changelog.result }}
+          MACOS: ${{ needs.macos.result }}
+          WINDOWS: ${{ needs.windows.result }}
         run: |
-          echo "A required job failed or was cancelled - see the jobs above." >&2
-          exit 1
-      - run: echo "gate OK"
+          set -u
+          echo "changelog=$CHANGELOG macos=$MACOS windows=$WINDOWS (event $EVENT)"
+          ok=true
+          if [ "$CHANGELOG" != success ] && ! { [ "$EVENT" != pull_request ] && [ "$CHANGELOG" = skipped ]; }; then
+            echo "::error::changelog: $CHANGELOG"; ok=false
+          fi
+          [ "$MACOS" = success ] || { echo "::error::macos: $MACOS (skipped = runner variable EID_MACOS_RUNNER unset)"; ok=false; }
+          [ "$WINDOWS" = success ] || { echo "::error::windows: $WINDOWS"; ok=false; }
+          $ok
+          echo "gate OK"

@@ -2,25 +2,28 @@
 #
 #   unit tests — windows/tests/EidTokenTest.Tests (fixtures generated in the tests; no network, no token)
 #   publish    — the WinUI 3 app (self-contained, x64) and the command-line tool (self-contained, win-x64)
-#   artifact   — eid-token-test-windows-x64:
-#                  eid-token-test.exe + .NET / Windows App SDK runtime, opensc\{opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
-#                  eid-token-check\{eid-token-check.exe + .NET runtime, opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
-#                  README.md, README-windows.md, trust\
+#   artifact   — eid-token-test-windows-x64 (holds eid-token-test-windows-x64.zip):
+#                  eid-token-test-windows-x64/
+#                    eid-token-test.exe + .NET / Windows App SDK runtime, opensc\{opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
+#                    eid-token-check\{eid-token-check.exe + .NET runtime, opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
+#                    README.md, README-windows.md, LICENSE, trust\
 #
-# Runner: `vars.EID_WINDOWS_RUNNER` (JSON); unset → GitHub-hosted "windows-latest". SDK pinned by windows/global.json.
-# Not signed. No secrets.
+# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (tags) — one set of build
+# steps for both. `ref` = what to check out (empty: the triggering commit).
+#
+# Runner: `vars.EID_WINDOWS_RUNNER` (JSON); unset → GitHub-hosted "windows-latest". .NET 10 SDK pinned by
+# windows/global.json (latest feature band). Not signed. No secrets.
 name: token-sdk-windows
 
 on:
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
-
-concurrency:
-  group: token-sdk-windows-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
 
 jobs:
   windows:
@@ -36,6 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
@@ -77,6 +81,7 @@ jobs:
       - name: check the package
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
+          if (-not (Test-Path (Join-Path $out 'eid-token-test.exe'))) { throw "missing in package: eid-token-test.exe" }
           foreach ($f in 'eid-token-test.exe', 'opensc\opensc-pkcs11.dll', 'opensc\COPYING', 'opensc\OPENSSL-LICENSE.txt',
                          'eid-token-check\eid-token-check.exe', 'eid-token-check\opensc-pkcs11.dll', 'eid-token-check\COPYING',
                          'eid-token-check\OPENSSL-LICENSE.txt') {
@@ -91,12 +96,23 @@ jobs:
           }
           Copy-Item ..\README.md (Join-Path $out 'README.md')
           Copy-Item README.md (Join-Path $out 'README-windows.md')
+          Copy-Item ..\LICENSE (Join-Path $out 'LICENSE')
           Copy-Item ..\trust (Join-Path $out 'trust') -Recurse
           Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
           Get-ChildItem (Join-Path $out 'eid-token-check') -File -Filter 'eid-token-check*' | Select-Object Name, Length | Format-Table -AutoSize
+      - name: zip
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'stage'
+          $zip = Join-Path $env:RUNNER_TEMP 'eid-token-test-windows-x64.zip'
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
+          if (Test-Path $zip) { Remove-Item $zip -Force }
+          New-Item -ItemType Directory $stage | Out-Null
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'eid-token-test') (Join-Path $stage 'eid-token-test-windows-x64') -Recurse
+          Compress-Archive -Path (Join-Path $stage 'eid-token-test-windows-x64') -DestinationPath $zip
+          Get-Item $zip | Select-Object Name, Length | Format-Table -AutoSize
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: eid-token-test-windows-x64
-          path: ${{ runner.temp }}/eid-token-test/
+          path: ${{ runner.temp }}/eid-token-test-windows-x64.zip
           if-no-files-found: error
           retention-days: 30

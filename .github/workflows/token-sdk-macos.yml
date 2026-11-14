@@ -6,26 +6,28 @@
 #   artifact   — eid-token-test-macos.zip:
 #                  eID Token Test.app
 #                  eid-token-check/{eid-token-check, opensc-pkcs11.so, libopensc.12.dylib, trust/}
-#                  README.md, trust/, licenses/{OpenSC-COPYING-LGPL-2.1.txt, OpenSSL-LICENSE.txt}
+#                  README.md, LICENSE, trust/, licenses/{OpenSC-COPYING-LGPL-2.1.txt, OpenSSL-LICENSE.txt}
 #
-# Runner: `vars.EID_MACOS_RUNNER` (JSON label set); unset → the job is skipped. OpenSC 0.26.1 is built with
-# macos/scripts/build_opensc.sh once per script version and cached under $CI_CACHE.
+# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (tags) — one set of build
+# steps for both. `ref` = what to check out (empty: the triggering commit).
+#
+# Runner: `vars.EID_MACOS_RUNNER` (JSON label set). The callers run this job only when it is set; an unset variable
+# therefore shows up as a skipped `macos` job, which `gate` / the release treat as a FAILURE (never as a pass).
+# OpenSC 0.26.1 is built with macos/scripts/build_opensc.sh once per script version and cached under $CI_CACHE.
 name: token-sdk-macos
 
 on:
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
-concurrency:
-  group: token-sdk-macos-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
-
 jobs:
   macos:
-    if: vars.EID_MACOS_RUNNER != ''
     runs-on: ${{ fromJSON(vars.EID_MACOS_RUNNER || '["macos-15"]') }}
     timeout-minutes: 60
     defaults:
@@ -38,6 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref }}
           persist-credentials: false
       - name: environment
         working-directory: .
@@ -131,6 +134,7 @@ jobs:
           ditto "$APP_PATH" "$stage/eID Token Test.app"
           ditto "$CLI_DIR" "$stage/eid-token-check"
           cp ../README.md "$stage/README.md"
+          cp ../LICENSE "$stage/LICENSE"
           ditto ../trust "$stage/trust"
           cp "$OPENSC_PREFIX/share/doc/opensc/COPYING" "$stage/licenses/OpenSC-COPYING-LGPL-2.1.txt"
           cp "$OPENSC_PREFIX/share/doc/opensc/OPENSSL-LICENSE.txt" "$stage/licenses/OpenSSL-LICENSE.txt"

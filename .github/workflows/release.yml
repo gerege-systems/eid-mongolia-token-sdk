@@ -1,0 +1,89 @@
+# release — a tag `v*` (or workflow_dispatch with an existing tag): builds both platforms with the SAME reusable
+# workflows as ci.yml (unit tests included) at that tag, then attaches to the GitHub Release of the tag:
+#
+#   eid-token-test-macos.zip, eid-token-test-windows-x64.zip, SHA256SUMS
+#
+# The release is created when it does not exist yet (the tag must exist — nothing here creates a tag); an existing
+# release gets the files replaced. Nothing is uploaded unless BOTH platforms built: a skipped macOS job (runner
+# variable EID_MACOS_RUNNER unset) fails the release like a failed one. Not signed. No secrets besides the job token.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build and release (v…)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  macos:
+    if: vars.EID_MACOS_RUNNER != ''
+    uses: ./.github/workflows/token-sdk-macos.yml
+    with:
+      ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+
+  windows:
+    uses: ./.github/workflows/token-sdk-windows.yml
+    with:
+      ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+
+  publish:
+    if: always()
+    needs: [macos, windows]
+    runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: both platforms built
+        shell: bash
+        env:
+          MACOS: ${{ needs.macos.result }}
+          WINDOWS: ${{ needs.windows.result }}
+        run: |
+          echo "macos=$MACOS windows=$WINDOWS"
+          [ "$MACOS" = success ] && [ "$WINDOWS" = success ]
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: eid-token-test-macos
+          path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: eid-token-test-windows-x64
+          path: dist
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: dist
+        run: |
+          set -eu
+          test -f eid-token-test-macos.zip
+          test -f eid-token-test-windows-x64.zip
+          sha256sum eid-token-test-macos.zip eid-token-test-windows-x64.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: GitHub Release
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+        run: |
+          set -eu
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG"; exit 1 ;; esac
+          files=(eid-token-test-macos.zip eid-token-test-windows-x64.zip SHA256SUMS)
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" -R "$REPO" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" -R "$REPO" --verify-tag --title "$TAG" \
+              --notes "eID Mongolia token SDK $TAG — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module. Check the files against SHA256SUMS. See README.md."
+          fi
