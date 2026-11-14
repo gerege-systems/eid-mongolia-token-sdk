@@ -8,21 +8,19 @@
 #                  eid-token-check/{eid-token-check, opensc-pkcs11.so, libopensc.12.dylib, trust/}
 #                  README.md, LICENSE, trust/, licenses/{OpenSC-COPYING-LGPL-2.1.txt, OpenSSL-LICENSE.txt}
 #
-# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (tags) — one set of build
-# steps for both. `ref` = what to check out (empty: the triggering commit).
+# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (manual release from
+# main) — one set of build steps for both. `ref` = what to check out (empty: the triggering commit).
 #
-# Runner: `vars.EID_MACOS_RUNNER` (JSON label set). The callers run this job only when it is set; an unset variable
-# therefore shows up as a skipped `macos` job, which `gate` / the release treat as a FAILURE (never as a pass).
-#
-# Build inputs on the (self-hosted) runner:
-#   release: true  — NOTHING pre-existing is used: OpenSC 0.26.1 + OpenSSL are built from their SHA-256-pinned source
-#                    tarballs (macos/scripts/build_opensc.sh), XcodeGen is downloaded and checked against the SHA-256
-#                    below, and every Swift / Xcode build directory lives in a fresh per-run folder that is deleted at
-#                    the end. A file left behind by any earlier (e.g. pull request) job cannot reach a release.
-#   release: false — CI cache under ~/ci-cache/eid-mongolia-token-sdk/<event> (pull_request, push, workflow_dispatch
-#                    each have their own folder). Checked on EVERY use: the XcodeGen archive against the SHA-256 below
-#                    (the binary is unpacked fresh each run); the OpenSC build outputs against the SHA-256 manifest
-#                    written when they were built (a mismatch fails the job).
+# release: true  — runs ONLY on the GitHub-hosted image `macos-15` (never on a self-hosted runner) and uses nothing
+#                  pre-existing: OpenSC 0.26.1 + OpenSSL are built from their SHA-256-pinned source tarballs
+#                  (macos/scripts/build_opensc.sh), XcodeGen is downloaded and checked against the SHA-256 below, and
+#                  every build folder is new for the run. Release artifacts come only from this path.
+# release: false — pull request builds on `vars.EID_MACOS_RUNNER` (JSON label set; the callers run this job only when
+#                  it is set, so an unset variable is a skipped job, which `gate` treats as a FAILURE). A self-hosted
+#                  runner shared by every job of one OS user is NOT a trust boundary: the CI cache under
+#                  ~/ci-cache/eid-mongolia-token-sdk/<event> is checked on every use (XcodeGen archive against the
+#                  SHA-256 below, OpenSC outputs against the manifest written when they were built) — that detects
+#                  accidental corruption only, not a hostile job. Nothing from these builds is released.
 name: token-sdk-macos
 
 on:
@@ -34,19 +32,23 @@ on:
       release:
         type: boolean
         default: false
+      artifact-name:
+        type: string
+        default: eid-token-test-macos
 
 permissions:
   contents: read
 
 jobs:
   macos:
-    runs-on: ${{ fromJSON(vars.EID_MACOS_RUNNER || '["macos-15"]') }}
-    timeout-minutes: 60
+    runs-on: ${{ inputs.release && 'macos-15' || fromJSON(vars.EID_MACOS_RUNNER || '["macos-15"]') }}
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
         working-directory: macos
     env:
+      GIT_CONFIG_NOSYSTEM: '1'
       XCODEGEN_VERSION: 2.45.4
       XCODEGEN_SHA256: 090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef
     steps:
@@ -54,6 +56,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          clean: true
       - name: environment
         working-directory: .
         env:
@@ -80,8 +83,23 @@ jobs:
           fi
           sw_vers
           xcodebuild -version
+      # The from-source OpenSC / OpenSSL build needs the usual build tools; on the GitHub-hosted image the missing ones
+      # are installed from Homebrew (release path only — the self-hosted runner brings its own).
+      - name: build tools (release)
+        if: ${{ inputs.release }}
+        run: |
+          missing=()
+          for tool in autoconf automake libtool pkg-config; do
+            command -v "$tool" >/dev/null 2>&1 || command -v "g$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "installing: ${missing[*]}"
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "${missing[@]}"
+          fi
+          for tool in autoconf automake pkg-config perl make clang; do printf '%s: ' "$tool"; command -v "$tool"; done
+          brew list --versions autoconf automake libtool pkg-config pkgconf 2>/dev/null || true
       # Keyed by the build script: a changed recipe builds a new tree. The manifest is written right after the build
-      # and checked on every later use.
+      # and checked on every later use (detects accidental corruption of the cache, nothing more).
       - name: OpenSC 0.26.1
         run: |
           key="$(shasum -a 256 scripts/build_opensc.sh | cut -c1-16)"
@@ -217,11 +235,11 @@ jobs:
           unzip -l "$RUNNER_TEMP/eid-token-test-macos.zip" | grep -E 'eid-token-check/(eid-token-check|opensc-pkcs11.so|libopensc.12.dylib)$'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: eid-token-test-macos
+          name: ${{ inputs.artifact-name }}
           path: ${{ runner.temp }}/eid-token-test-macos.zip
           if-no-files-found: error
           retention-days: 14
-      # A release build leaves nothing behind for a later job to pick up.
+      # Tidy: the release build folder is removed (the GitHub-hosted VM is discarded after the job anyway).
       - name: remove the release build folder
         if: ${{ always() && inputs.release }}
         run: rm -rf "$CI_CACHE"

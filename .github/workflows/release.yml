@@ -1,24 +1,22 @@
-# release — a tag `v*` (or workflow_dispatch from main with an existing tag): builds both platforms with the SAME
-# reusable workflows as ci.yml (unit tests included) at that tag, then attaches to the GitHub Release of the tag:
+# release — run by hand (workflow_dispatch) from `main` with the tag to release; there is no tag trigger, so the
+# workflow file on main always applies. Builds both platforms with the SAME reusable workflows as ci.yml (unit tests
+# included) at the tagged commit, ONLY on GitHub-hosted runners (macos-15, windows-latest, ubuntu-24.04 — no runner
+# variables here), and attaches to the GitHub Release of the tag:
 #
 #   eid-token-test-macos.zip, eid-token-test-windows-x64.zip, SHA256SUMS (the two SHA-256 are also in the release text)
 #
-# Guards (job `guard`, before anything is built):
-#   - workflow_dispatch only from refs/heads/main;
-#   - the tagged commit must be on main (an ancestor of origin/main) — a tag on an unmerged branch is not released.
-# The macOS build runs with `release: true`: no runner cache at all (see token-sdk-macos.yml).
-# Never overwrites: a release that already has files fails the run; an existing release without files gets them.
-# Nothing is uploaded unless BOTH platforms built: a skipped macOS job (runner variable EID_MACOS_RUNNER unset) fails
-# the release like a failed one. Nothing here creates a tag. Not signed. No secrets besides the job token.
+# Guards: dispatched from refs/heads/main; the tag already exists and its commit is on main (ancestor of origin/main);
+# the build jobs check out that exact commit; right before the release is created and again before the files are
+# uploaded the tag is resolved on the remote and must still point at the commit that was built. Never overwrites: a
+# release that already has files fails the run. Nothing is published unless both platforms built. Nothing here creates
+# a tag. Not signed. No secrets besides the job token.
 name: release
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing tag to build and release (v…)
+        description: Existing tag on main to build and release (v…)
         required: true
         type: string
 
@@ -26,12 +24,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   guard:
-    runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
       ref: ${{ steps.check.outputs.ref }}
@@ -44,31 +42,23 @@ jobs:
       - id: check
         shell: bash
         env:
-          EVENT: ${{ github.event_name }}
           REF: ${{ github.ref }}
-          PUSHED_TAG: ${{ github.ref_name }}
-          INPUT_TAG: ${{ inputs.tag }}
+          TAG: ${{ inputs.tag }}
         run: |
           set -eu
-          if [ "$EVENT" = workflow_dispatch ]; then
-            [ "$REF" = refs/heads/main ] || { echo "::error::workflow_dispatch is allowed from refs/heads/main only (got $REF)"; exit 1; }
-            tag="$INPUT_TAG"
-          else
-            tag="$PUSHED_TAG"
-          fi
-          case "$tag" in v[0-9]*) ;; *) echo "::error::not a release tag: $tag"; exit 1 ;; esac
-          commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || { echo "::error::tag $tag does not exist"; exit 1; }
+          [ "$REF" = refs/heads/main ] || { echo "::error::run the release from refs/heads/main (got $REF)"; exit 1; }
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG"; exit 1 ;; esac
+          commit="$(git rev-parse --verify "refs/tags/$TAG^{commit}")" || { echo "::error::tag $TAG does not exist"; exit 1; }
           git rev-parse --verify refs/remotes/origin/main >/dev/null
           if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
-            echo "::error::$tag ($commit) is not on main"; exit 1
+            echo "::error::$TAG ($commit) is not on main"; exit 1
           fi
-          echo "$tag -> $commit (on main)"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "$TAG -> $commit (on main)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "ref=$commit" >> "$GITHUB_OUTPUT"
 
   macos:
     needs: guard
-    if: vars.EID_MACOS_RUNNER != ''
     uses: ./.github/workflows/token-sdk-macos.yml
     with:
       ref: ${{ needs.guard.outputs.ref }}
@@ -79,11 +69,12 @@ jobs:
     uses: ./.github/workflows/token-sdk-windows.yml
     with:
       ref: ${{ needs.guard.outputs.ref }}
+      release: true
 
   publish:
     if: always()
     needs: [guard, macos, windows]
-    runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
@@ -121,11 +112,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TAG: ${{ needs.guard.outputs.tag }}
+          BUILT: ${{ needs.guard.outputs.ref }}
         run: |
           set -eu
+          # The commit the tag points at on the remote right now (annotated tags peeled).
+          tag_still_built() {
+            local type sha
+            read -r type sha < <(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+            if [ "$type" = tag ]; then sha="$(gh api "repos/$REPO/git/tags/$sha" --jq '.object.sha')"; fi
+            if [ "$sha" != "$BUILT" ]; then
+              echo "::error::tag $TAG now points at $sha, not at the built commit $BUILT — nothing published"; exit 1
+            fi
+          }
           files=(eid-token-test-macos.zip eid-token-test-windows-x64.zip SHA256SUMS)
           {
-            echo "eID Mongolia token SDK $TAG — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module."
+            echo "eID Mongolia token SDK $TAG ($BUILT) — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module."
             echo
             echo "SHA-256 (also in SHA256SUMS):"
             echo
@@ -140,8 +141,10 @@ jobs:
             if [ "$count" != 0 ]; then
               echo "::error::release $TAG already has $count file(s) — nothing is overwritten"; exit 1
             fi
-            gh release upload "$TAG" "${files[@]}" -R "$REPO"
-            gh release edit "$TAG" -R "$REPO" --notes-file notes.md
           else
-            gh release create "$TAG" "${files[@]}" -R "$REPO" --verify-tag --title "$TAG" --notes-file notes.md
+            tag_still_built
+            gh release create "$TAG" -R "$REPO" --verify-tag --draft --title "$TAG" --notes-file notes.md
           fi
+          tag_still_built
+          gh release upload "$TAG" "${files[@]}" -R "$REPO"
+          gh release edit "$TAG" -R "$REPO" --notes-file notes.md --draft=false

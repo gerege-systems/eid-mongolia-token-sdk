@@ -9,10 +9,11 @@
 #                    eid-token-check\{eid-token-check.exe + .NET runtime, opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
 #                    README.md, README-windows.md, LICENSE, trust\
 #
-# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (tags) — one set of build
-# steps for both. `ref` = what to check out (empty: the triggering commit).
+# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (manual release from main) —
+# one set of build steps for both. `ref` = what to check out (empty: the triggering commit).
 #
-# Runner: `vars.EID_WINDOWS_RUNNER` (JSON); unset → GitHub-hosted "windows-latest". .NET 10 SDK pinned by
+# Runner: release: true → always the GitHub-hosted image "windows-latest" (release artifacts never come from a
+# self-hosted runner); otherwise `vars.EID_WINDOWS_RUNNER` (JSON), unset → "windows-latest". .NET 10 SDK pinned by
 # windows/global.json (latest feature band). Not signed. No secrets.
 name: token-sdk-windows
 
@@ -22,13 +23,16 @@ on:
       ref:
         type: string
         default: ''
+      release:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
   windows:
-    runs-on: ${{ fromJSON(vars.EID_WINDOWS_RUNNER || '"windows-latest"') }}
+    runs-on: ${{ inputs.release && 'windows-latest' || fromJSON(vars.EID_WINDOWS_RUNNER || '"windows-latest"') }}
     timeout-minutes: 30
     defaults:
       run:
@@ -42,6 +46,7 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
+          clean: true
       - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: windows/global.json

@@ -46,7 +46,8 @@ windows/
   third_party/opensc/        opensc-pkcs11.dll (OpenSC 0.26.1 x64), COPYING, OPENSSL-LICENSE.txt, эх сурвалж + SHA-256
   README.md                  Windows zip-ийн бүтэц
 changelog.d/                 өөрчлөлтийн фрагментууд
-.github/workflows/           ci (changelog + macos + windows → gate), release (tag → GitHub Release);
+.github/workflows/           ci (changelog + macos + windows + verifier-linux → gate), release (гараар: main + tag →
+                             GitHub Release, зөвхөн GitHub-hosted runner);
                              token-sdk-macos / token-sdk-windows — хоёулаа ашигладаг build алхмууд
 ```
 
@@ -62,9 +63,11 @@ Apple-ийн платформын код (Security.framework) — сервер �
 Багцыг репогийн **GitHub Releases**-ээс авна: `eid-token-test-macos.zip`, `eid-token-test-windows-x64.zip` ба
 `SHA256SUMS` (хоёр zip-ийн SHA-256 нь release-ийн тайлбарт ч бий; татсан zip-ээ `shasum -a 256 -c SHA256SUMS` /
 PowerShell `Get-FileHash`-аар тулга). Checksum нь зөвхөн **татсан файл бүтэн, өөрчлөгдөөгүйг** (release хуудастай
-таарч буйг) харуулна — хэн бүтээснийг батлахгүй (build-үүд code-signing-гүй). Release-ийг `main` дээрх commit-ийн tag
-(`v…`)-аас CI-тэй ижил алхмаар (unit тест орно) бүтээнэ; macOS-ийн release build нь runner-ийн cache-ийг огт ашиглахгүй
-(OpenSC, OpenSSL, XcodeGen-ийг SHA-256-аар бэхэлсэн эх сурвалжаас шинээр). Эсвэл §4-өөр эх кодоос бүтээнэ.
+таарч буйг) харуулна — хэн бүтээснийг батлахгүй (build-үүд code-signing-гүй). Release-ийн файлууд зөвхөн
+**GitHub-hosted** runner (macos-15, windows-latest) дээр, `main` дээрх tag-ийн яг тэр commit-оос, CI-тэй ижил алхмаар
+(unit тест орно) бүтээгдэнэ; macOS-ийн OpenSC, OpenSSL, XcodeGen-ийг SHA-256-аар бэхэлсэн эх сурвалжаас шинээр бүтээнэ.
+PR-ийн build-үүд self-hosted runner дээр явж болох ч тэр нь итгэлийн хил биш — тэдгээрээс юу ч release-д орохгүй. Эсвэл
+§4-өөр эх кодоос бүтээнэ.
 
 ### macOS
 
@@ -149,6 +152,14 @@ dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x6
 ```
 
 `opensc-pkcs11.dll` (`third_party/opensc/`) апп-ийн `opensc\` дэд хавтсанд, CLI-ийн хажууд автоматаар хуулагдана.
+
+### Release (maintainer)
+
+1. Release хийх commit `main` дээр байна; түүн дээр tag тавина: `git tag v0.3.0 <commit> && git push origin v0.3.0`.
+2. GitHub → Actions → **release** → «Run workflow»: branch **main**, `tag` = `v0.3.0`.
+3. Workflow tag main дээр байгааг шалгаад тэр commit-ийг GitHub-hosted runner-ууд дээр бүтээж, хоёр zip + `SHA256SUMS`-ийг
+   Release-д хавсаргана. Tag-ийг дундаас нь өөр commit руу шилжүүлбэл юу ч нийтлэхгүй; файлтай release-ийг дахин бичихгүй.
+4. CI-ийн macOS release замыг нийтлэхгүйгээр шалгах: Actions → **ci** → «Run workflow», `macos_release_dry_run` ✓.
 
 ## 5. Module-ийг өөрийн апп-д ашиглах
 

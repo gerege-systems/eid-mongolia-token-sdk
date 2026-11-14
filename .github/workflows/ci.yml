@@ -6,6 +6,9 @@
 #   windows   — token-sdk-windows.yml (unit tests, app, eid-token-check.exe, zip)
 #   verifier-linux — the .NET unit tests (verifier, reader policies, command-line tool) on Linux (GitHub-hosted
 #               ubuntu-24.04): the C# verifier is the one recommended for servers, so it is tested where servers run
+#   macos-release-dry-run — only on a manual run with macos_release_dry_run: the macOS build exactly as release.yml
+#               runs it (release: true → GitHub-hosted macos-15, OpenSC/OpenSSL/XcodeGen from pinned sources); the zip is
+#               uploaded as a run artifact only. Not part of the gate and never on pull requests.
 #   gate      — the single required check. It needs all four and passes ONLY when each of them succeeded:
 #               a failed, cancelled or SKIPPED platform job (e.g. EID_MACOS_RUNNER unset) fails the gate. The platform
 #               jobs are not path-filtered, so "not triggered" cannot happen; on workflow_dispatch (no PR) the changelog
@@ -17,6 +20,11 @@ name: ci
 on:
   pull_request:
   workflow_dispatch:
+    inputs:
+      macos_release_dry_run:
+        description: Also run the macOS RELEASE build path (GitHub-hosted macos-15, from source) — nothing is published
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -57,6 +65,13 @@ jobs:
 
   windows:
     uses: ./.github/workflows/token-sdk-windows.yml
+
+  macos-release-dry-run:
+    if: github.event_name == 'workflow_dispatch' && inputs.macos_release_dry_run
+    uses: ./.github/workflows/token-sdk-macos.yml
+    with:
+      release: true
+      artifact-name: eid-token-test-macos-release-dry-run
 
   verifier-linux:
     runs-on: ubuntu-24.04

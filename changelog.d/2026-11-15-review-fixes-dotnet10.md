@@ -33,12 +33,17 @@
   «Токен олдсонгүй»; screenshot + log on failure), a static check of `resources.pri` / `App.xbf` / `MainWindow.xbf`,
   and a macOS launch check (the app stays up; the same marker is required when the runner has a GUI session — the
   current macOS runner runs as a launchd daemon, so there only start + stay up is checked, with a warning).
-- **What (release / CI hardening):** a macOS release build uses no runner cache at all (OpenSC, OpenSSL, XcodeGen from
-  their SHA-256-pinned sources into a fresh per-run folder, deleted afterwards); the CI cache is per event type and
-  checked on every use (XcodeGen archive against the committed SHA-256, OpenSC outputs against their build manifest).
-  `release.yml`: dispatch only from main, the tagged commit must be on main, never overwrites a release that has files,
-  SHA-256 of both zips in the release text. No `.pdb` in the Windows package. The UI smoke screenshot shows only the
-  app's window (GitHub-hosted runners only). The .NET tests also run on Linux (`verifier-linux`, required by `gate`).
+- **What (release / CI hardening):** release artifacts are built ONLY on GitHub-hosted runners (macos-15,
+  windows-latest; `release: true` hard-codes them) at the exact tagged commit; macOS builds OpenSC, OpenSSL and
+  XcodeGen from SHA-256-pinned sources in fresh folders (missing build tools from Homebrew on that image only).
+  `release.yml` runs only by hand from main with an existing tag on main, re-checks on the remote that the tag still
+  points at the built commit before creating the release and before uploading, never overwrites a release that has
+  files, and lists both zips' SHA-256 in the release text. Pull request builds may run on the self-hosted macOS runner;
+  that runner is not a trust boundary — its per-event cache is checked on every use (XcodeGen archive hash, OpenSC
+  output manifest), which detects accidental corruption only, and nothing from it is released. `ci` has a manual
+  `macos_release_dry_run` input that runs the release build path without publishing. No `.pdb` in the Windows
+  package; the UI smoke screenshot shows only the app's window (GitHub-hosted runners only); the .NET tests also run
+  on Linux (`verifier-linux`, required by `gate`).
 - **What (alignment):** a broken `trust/` file stops loading with an error on both platforms; macOS checks OID encoding
   like Windows; an empty token serial never selects a token on macOS either; the Windows chain evaluation checks time
   validity like macOS.
