@@ -111,8 +111,9 @@ jobs:
           Copy-Item ..\trust (Join-Path $out 'trust') -Recurse
           Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
           Get-ChildItem (Join-Path $out 'eid-token-check') -File -Filter 'eid-token-check*' | Select-Object Name, Length | Format-Table -AutoSize
-      # The PUBLISHED app from a clean folder: main window, "main page loaded" in its log, and via UI Automation the
-      # three section headings, «Дахин унших» and the empty state «Токен олдсонгүй» (windows/scripts/ui-smoke.ps1).
+      # The PUBLISHED app from a clean folder: main window, "main page loaded" in its log, via UI Automation the three
+      # section headings, «Дахин унших» and the empty state «Токен олдсонгүй», and a pixel check of the app's own
+      # window (PrintWindow, full content) proving a frame was drawn (windows/scripts/ui-smoke.ps1).
       - name: UI smoke test (published app)
         run: |
           powershell -NoProfile -ExecutionPolicy Bypass -File scripts\ui-smoke.ps1 `
@@ -130,7 +131,8 @@ jobs:
           foreach ($f in 'resources.pri', 'App.xbf', 'MainWindow.xbf') {
             if (-not (Test-Path (Join-Path $out $f))) { throw "missing in package: $f (the unpackaged app cannot load its XAML)" }
           }
-      - if: failure()
+      # Always: the window-only capture (ui-smoke-window.png) and, on failure, the UI Automation tree and the logs.
+      - if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ui-smoke-windows

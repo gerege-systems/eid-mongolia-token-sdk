@@ -31,6 +31,8 @@
   `eid-token-test.log`, shown in a code-built error window or a message box; the main page writes
   `main page loaded`. CI: UI smoke test of the published app through UI Automation (headings, «Дахин унших»,
   «Токен олдсонгүй»; screenshot + log on failure), a static check of `resources.pri` / `App.xbf` / `MainWindow.xbf`,
+  a pixel check of the app's own window (PrintWindow with full content after waking the display: >= 50 colours, the
+  page surface colour present, no colour over 90 %; the window PNG is always kept as the `ui-smoke-windows` artifact),
   and a macOS launch check (the app stays up; the same marker is required when the runner has a GUI session — the
   current macOS runner runs as a launchd daemon, so there only start + stay up is checked, with a warning).
 - **What (release / CI hardening):** release artifacts are built ONLY on GitHub-hosted runners (macos-15,

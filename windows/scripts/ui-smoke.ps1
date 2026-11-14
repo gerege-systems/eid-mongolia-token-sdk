@@ -5,8 +5,12 @@
 #      first layout of its main page);
 #   3. UI Automation: the three section headings (token / certificates / login test), the reload button and the
 #      empty state "no token found" (no token on a CI machine) must be there;
-#   4. on failure: a screenshot of the app's own window (GitHub-hosted runners only), the UI Automation tree, the
-#      app log and stderr go to -OutDir.
+#   4. pixels: the UI Automation tree and the log line exist even when no frame was ever presented, so the display is
+#      kept awake, the app's own window is captured with PrintWindow(PW_RENDERFULLCONTENT) (PrintWindow(..., 0) is
+#      always white for WinUI) and its client area must hold >= 50 distinct colours, the page surface colour
+#      (#F9F9FC light / #0B0E12 dark, from App.xaml, by the user's app theme) and no colour on more than 90 % of it;
+#      that window-only PNG is always written to -OutDir (ui-smoke-window.png);
+#   5. on failure: also the UI Automation tree, the app log and stderr go to -OutDir.
 #
 # The process is always stopped by its own PID. Non-ASCII texts are written as \u escapes so the file reads the same
 # under any code page.
@@ -18,6 +22,87 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.Forms, System.Drawing
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+public static class EidWindowPixels
+{
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [StructLayout(LayoutKind.Sequential)] public struct POINT { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+    [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
+    [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll")] static extern uint SetThreadExecutionState(uint flags);
+
+    // ES_CONTINUOUS | ES_DISPLAY_REQUIRED, then WM_SYSCOMMAND / SC_MONITORPOWER / -1 (on) to every top-level window.
+    public static void KeepDisplayOn()
+    {
+        SetThreadExecutionState(0x80000000u | 0x00000002u);
+        PostMessage(new IntPtr(0xFFFF), 0x0112, new IntPtr(0xF170), new IntPtr(-1));
+    }
+
+    // The whole window as the compositor renders it (PW_RENDERFULLCONTENT = 0x2).
+    public static Bitmap Capture(IntPtr hwnd)
+    {
+        RECT r;
+        GetWindowRect(hwnd, out r);
+        Bitmap bitmap = new Bitmap(Math.Max(1, r.Right - r.Left), Math.Max(1, r.Bottom - r.Top), PixelFormat.Format32bppArgb);
+        using (Graphics g = Graphics.FromImage(bitmap))
+        {
+            IntPtr hdc = g.GetHdc();
+            try { PrintWindow(hwnd, hdc, 0x2); } finally { g.ReleaseHdc(hdc); }
+        }
+        return bitmap;
+    }
+
+    // The client area (below the title bar) inside a Capture() bitmap.
+    public static Rectangle ClientArea(IntPtr hwnd)
+    {
+        RECT w, c;
+        GetWindowRect(hwnd, out w);
+        GetClientRect(hwnd, out c);
+        POINT origin = new POINT();
+        ClientToScreen(hwnd, ref origin);
+        return new Rectangle(origin.X - w.Left, origin.Y - w.Top, c.Right - c.Left, c.Bottom - c.Top);
+    }
+
+    // { distinct colours, share of the most frequent colour, pixels with exactly `expected` (opaque RGB) }.
+    public static double[] Measure(Bitmap bitmap, Rectangle area, int expectedRgb)
+    {
+        area.Intersect(new Rectangle(0, 0, bitmap.Width, bitmap.Height));
+        if (area.Width <= 0 || area.Height <= 0) return new double[] { 0, 1, 0 };
+        BitmapData data = bitmap.LockBits(area, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+        Dictionary<int, int> counts = new Dictionary<int, int>();
+        int[] row = new int[area.Width];
+        try
+        {
+            for (int y = 0; y < area.Height; y++)
+            {
+                Marshal.Copy(new IntPtr(data.Scan0.ToInt64() + (long)y * data.Stride), row, 0, area.Width);
+                for (int x = 0; x < area.Width; x++)
+                {
+                    int rgb = row[x] & 0x00FFFFFF;
+                    int n;
+                    counts.TryGetValue(rgb, out n);
+                    counts[rgb] = n + 1;
+                }
+            }
+        }
+        finally { bitmap.UnlockBits(data); }
+        int top = 0;
+        foreach (int n in counts.Values) if (n > top) top = n;
+        int expected;
+        counts.TryGetValue(expectedRgb & 0x00FFFFFF, out expected);
+        return new double[] { counts.Count, (double)top / ((double)area.Width * area.Height), expected };
+    }
+}
+'@
 
 function U([string] $escaped) { [regex]::Unescape($escaped) }
 $expected = @(
@@ -44,14 +129,9 @@ function Save-Evidence([System.Diagnostics.Process] $process) {
         if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
             Write-Host "screenshot skipped (runner environment '$($env:RUNNER_ENVIRONMENT)')"
         } elseif ($process -and -not $process.HasExited -and $process.MainWindowHandle -ne [IntPtr]::Zero) {
-            $rect = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle).Current.BoundingRectangle
-            if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
-                $bitmap = New-Object System.Drawing.Bitmap ([int]$rect.Width), ([int]$rect.Height)
-                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-                $graphics.CopyFromScreen([int]$rect.X, [int]$rect.Y, 0, 0, $bitmap.Size)
-                $bitmap.Save((Join-Path $OutDir 'ui-smoke-window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-                $graphics.Dispose(); $bitmap.Dispose()
-            }
+            $bitmap = [EidWindowPixels]::Capture($process.MainWindowHandle)
+            $bitmap.Save((Join-Path $OutDir 'ui-smoke-window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+            $bitmap.Dispose()
         } else {
             Write-Host "screenshot skipped (no app window)"
         }
@@ -108,6 +188,25 @@ try {
         Start-Sleep -Seconds 1
     }
     Write-Host "UI Automation: all $($expected.Count) texts found"
+
+    # Pixels: a frame was really presented. Light / dark page surface from App.xaml, by the user's app theme.
+    [EidWindowPixels]::KeepDisplayOn()
+    Start-Sleep -Seconds 3
+    $light = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize' -ErrorAction SilentlyContinue).AppsUseLightTheme
+    $surface = if ($light -eq 0) { 0x0B0E12 } else { 0xF9F9FC }
+    $hwnd = $process.MainWindowHandle
+    $bitmap = [EidWindowPixels]::Capture($hwnd)
+    try {
+        $bitmap.Save((Join-Path $OutDir 'ui-smoke-window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+        $area = [EidWindowPixels]::ClientArea($hwnd)
+        $m = [EidWindowPixels]::Measure($bitmap, $area, $surface)
+    } finally { $bitmap.Dispose() }
+    $distinct = [int]$m[0]; $topShare = [double]$m[1]; $surfacePixels = [int]$m[2]
+    $summary = "client area $($area.Width)x$($area.Height): $distinct distinct colours, top colour {0:P1}, surface #{1:X6} on $surfacePixels pixels (theme: {2})" -f $topShare, $surface, $(if ($light -eq 0) { 'dark' } else { 'light' })
+    Write-Host "pixels: $summary"
+    if ($distinct -lt 50 -or $topShare -gt 0.90 -or $surfacePixels -eq 0) {
+        throw "the window content was not rendered: $summary (need >= 50 colours, top colour <= 90 %, surface colour present)"
+    }
     $process.Refresh()
     if ($process.HasExited) { throw "the app exited (code $($process.ExitCode))" }
     Write-Host "ui smoke OK"
