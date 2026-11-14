@@ -164,7 +164,9 @@ public enum ChainCheck {
               SecTrustSetNetworkFetchAllowed(secTrust, false) == errSecSuccess else {
             return (CheckResult(.chain, .unavailable, "Гинж шалгах орчныг үүсгэж чадсангүй"), [leaf])
         }
-        SecTrustSetVerifyDate(secTrust, at as CFDate)
+        // The same instant as on Windows / Linux: one second before notAfter when `at` is that very second (OpenSSL
+        // treats notAfter as exclusive). The time rules themselves are this code's (step 1 and the validity check).
+        SecTrustSetVerifyDate(secTrust, platformInstant(at, notBefore: leaf.notBefore, notAfter: leaf.notAfter) as CFDate)
         var error: CFError?
         let trusted = SecTrustEvaluateWithError(secTrust, &error)
         let built = ((SecTrustCopyCertificateChain(secTrust) as? [SecCertificate]) ?? [])
@@ -182,6 +184,12 @@ public enum ChainCheck {
         }
         let names = chain.map { $0.subjectName?.displayName ?? "—" }
         return (CheckResult(.chain, .passed, names.joined(separator: " → ")), chain)
+    }
+
+    /// The instant the platform evaluates the path at: `at`, or one second before the AUTH certificate's notAfter
+    /// when `at` is that very second (the same rule on Windows / Linux).
+    static func platformInstant(_ at: Date, notBefore: Date, notAfter: Date) -> Date {
+        at >= notAfter && notAfter - 1 >= notBefore ? notAfter - 1 : at
     }
 
     /// «Гинжний гэрчилгээ (‹нэр›) хүчинтэй хугацаанаас гадуур» — the same text in the chain and validity rows.

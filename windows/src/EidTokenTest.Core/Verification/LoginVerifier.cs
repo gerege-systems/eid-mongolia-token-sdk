@@ -238,7 +238,10 @@ public sealed class LoginVerifier
         // Time validity is checked like Security.framework does on macOS; only the legacy "nested validity" rule
         // (which macOS does not apply) is ignored.
         policy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeNested;
-        policy.VerificationTime = at.UtcDateTime;
+        // At the AUTH certificate's last second OpenSSL (.NET on Linux) already treats it as expired (notAfter
+        // exclusive) while Windows and macOS do not: the platform evaluates one second earlier then, on every platform.
+        // The time rules themselves are this code's (step 1 above and the validity check), unchanged.
+        policy.VerificationTime = PlatformInstant(at, from, to).UtcDateTime;
         policy.VerificationTimeIgnored = false;
 
         var built = chain.Build(certificate);
@@ -255,6 +258,11 @@ public sealed class LoginVerifier
         var names = new[] { certificate }.Concat(cas).Select(c => Der.DisplayName(c.SubjectName.RawData));
         return CheckResult.Pass(name, string.Join(" → ", names));
     }
+
+    /// The instant the platform evaluates the path at: <paramref name="at"/>, or one second before the AUTH
+    /// certificate's notAfter when <paramref name="at"/> is that very second (the same rule on macOS).
+    internal static DateTimeOffset PlatformInstant(DateTimeOffset at, DateTimeOffset notBefore, DateTimeOffset notAfter) =>
+        at >= notAfter && notAfter.AddSeconds(-1) >= notBefore ? notAfter.AddSeconds(-1) : at;
 
     /// «Гинжний гэрчилгээ (‹нэр›) хүчинтэй хугацаанаас гадуур» — the same text in the chain and validity rows.
     internal static string ExpiredCaReason(string name) => "Гинжний гэрчилгээ (" + name + ") хүчинтэй хугацаанаас гадуур";
