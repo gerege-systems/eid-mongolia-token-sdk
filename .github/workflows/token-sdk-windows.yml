@@ -61,13 +61,18 @@ jobs:
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
           if (Test-Path $out) { Remove-Item $out -Recurse -Force }
-          dotnet publish src/EidTokenTest.App/EidTokenTest.App.csproj -c Release -p:Platform=x64 -o $out
+          dotnet publish src/EidTokenTest.App/EidTokenTest.App.csproj -c Release -p:Platform=x64 -p:DebugType=none -p:DebugSymbols=false -o $out
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish (app) failed (exit $LASTEXITCODE)" }
       - name: publish eid-token-check (self-contained, win-x64)
         run: |
           $cli = Join-Path $env:RUNNER_TEMP 'eid-token-test\eid-token-check'
-          dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x64 --self-contained true -o $cli
+          dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=none -p:DebugSymbols=false -o $cli
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish (cli) failed (exit $LASTEXITCODE)" }
+          # Debug symbols a referenced project or package still left behind are not shipped.
+          Get-ChildItem (Join-Path $env:RUNNER_TEMP 'eid-token-test') -Recurse -File -Filter *.pdb | ForEach-Object {
+            Write-Host "not shipped: $($_.FullName)"
+            Remove-Item $_.FullName
+          }
       # No token is touched: help, a usage error (exit 2) and a module that does not exist (exit 3).
       - name: smoke test eid-token-check
         run: |
@@ -88,8 +93,8 @@ jobs:
                          'eid-token-check\OPENSSL-LICENSE.txt') {
             if (-not (Test-Path (Join-Path $out $f))) { throw "missing in package: $f" }
           }
-          # READ-ONLY: no tool that writes to a token, no OpenSC profile.
-          $forbidden = Get-ChildItem $out -Recurse -File | Where-Object { $_.Name -in @('pkcs15-init.exe', 'pkcs15-tool.exe', 'pkcs11-tool.exe', 'opensc.dll') -or $_.Name -like '*label*.exe' -or $_.Extension -eq '.profile' }
+          # READ-ONLY: no tool that writes to a token, no OpenSC profile. No debug symbols (*.pdb) in the package.
+          $forbidden = Get-ChildItem $out -Recurse -File | Where-Object { $_.Name -in @('pkcs15-init.exe', 'pkcs15-tool.exe', 'pkcs11-tool.exe', 'opensc.dll') -or $_.Name -like '*label*.exe' -or $_.Extension -in @('.profile', '.pdb') }
           if ($forbidden) { throw ("forbidden files in package: " + ($forbidden.FullName -join ', ')) }
           foreach ($dll in 'opensc\opensc-pkcs11.dll', 'eid-token-check\opensc-pkcs11.dll') {
             $hash = (Get-FileHash (Join-Path $out $dll) -Algorithm SHA256).Hash

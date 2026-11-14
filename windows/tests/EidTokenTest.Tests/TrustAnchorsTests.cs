@@ -52,7 +52,31 @@ public sealed class TrustAnchorsTests
         Assert.Null(new TrustAnchors([TestPki.PublicOnly(pki.Root)], [], TestPki.PublicOnly(pki.Issuing)).IssuingCa);
     }
 
-    /// L1: the public constructor enforces the 04 pin — a test CA can only be injected through the internal one.
+    /// A trust file that is not one strict DER certificate stops loading with an error naming the file (the same on
+    /// macOS) — never silently skipped.
+    [Fact]
+    public void BrokenTrustFileFailsLoudly()
+    {
+        using var pki = TestPki.Create();
+        static string Pem(byte[] der) =>
+            "-----BEGIN CERTIFICATE-----\n" + Convert.ToBase64String(der, Base64FormattingOptions.InsertLineBreaks) + "\n-----END CERTIFICATE-----\n";
+        Assert.Single(TrustAnchors.ParsePem(Pem(pki.Root.RawData), "anchors/root.pem"));
+        foreach (var (text, reason) in new[]
+                 {
+                     ("-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n", "not valid base64"),
+                     ("-----BEGIN CERTIFICATE-----\n", "unclosed"),
+                     ("no certificate here", "no certificate"),
+                     (Pem([.. pki.Issuing.RawData, 0x00]), "not one strict DER certificate"),
+                     (Pem(DerTests.NonDerBoolean(pki.Root)), "not one strict DER certificate"),
+                 })
+        {
+            var error = Assert.Throws<InvalidOperationException>(() => TrustAnchors.ParsePem(text, "intermediates/bad.pem"));
+            Assert.StartsWith("intermediates/bad.pem", error.Message, StringComparison.Ordinal);
+            Assert.Contains(reason, error.Message, StringComparison.Ordinal);
+        }
+    }
+
+    /// the public constructor enforces the 04 pin — a test CA can only be injected through the internal one.
     [Fact]
     public void PublicConstructorEnforcesThePin()
     {

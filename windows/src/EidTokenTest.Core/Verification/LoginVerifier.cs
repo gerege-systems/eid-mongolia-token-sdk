@@ -199,11 +199,14 @@ public sealed class LoginVerifier
     ///     04 (<see cref="TrustAnchors.CaPath"/>): each CA on it must be within its validity period (an expired CA fails
     ///     HERE) and the path must reach a bundled root;
     ///  2. X509Chain evaluates the AUTH certificate against the bundled roots only (CustomRootTrust), no downloads, no
-    ///     revocation (checks 4 and 5 and the issuing CA's own revocation below). .NET cannot keep Windows from also
-    ///     looking at intermediates in the machine's CA store, so whatever copy it picks is only accepted when
-    ///  3. element [1] of its path has the SAME subject AND the SAME public key as the pinned 04 — a byte-different copy
-    ///     of 04 in the CA store neither replaces the pinned one nor causes a refusal; time validity is judged in 1 and
-    ///     by the validity check, not by the platform (so an expired copy elsewhere cannot refuse either);
+    ///     revocation (checks 4 and 5 and the issuing CA's own revocation below), at the same instant and with the same
+    ///     time rule as macOS (every certificate of the platform's path valid then). .NET cannot keep Windows from also
+    ///     looking at intermediates in the machine's CA store, so the platform's path may run through another copy of
+    ///     04 (same subject and key): the platform then checks the AUTH certificate's signature with that copy's
+    ///     (identical) key and applies that copy's constraints. The path is accepted only when
+    ///  3. element [1] of the platform's path has the SAME subject AND the SAME public key as the pinned 04. From here
+    ///     on only the pinned 04 is used: the validity / path check from trust/ (1), issuer identification
+    ///     (<see cref="TrustAnchors.IssuerOf"/>) and the OCSP / CRL verification;
     ///  4. the AUTH profile (<see cref="AuthProfileProblem"/>).
     ///
     /// <paramref name="cas"/> receives copies of the pinned path (pinned 04 DER first, root last; caller disposes) —
@@ -232,7 +235,9 @@ public sealed class LoginVerifier
         policy.ExtraStore.AddRange(_trust.Intermediates.ToArray());
         policy.RevocationMode = X509RevocationMode.NoCheck;           // OCSP and CRL: below and checks 4 and 5
         policy.DisableCertificateDownloads = true;
-        policy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeValid | X509VerificationFlags.IgnoreNotTimeNested;
+        // Time validity is checked like Security.framework does on macOS; only the legacy "nested validity" rule
+        // (which macOS does not apply) is ignored.
+        policy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeNested;
         policy.VerificationTime = at.UtcDateTime;
         policy.VerificationTimeIgnored = false;
 

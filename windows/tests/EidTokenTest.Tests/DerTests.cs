@@ -5,7 +5,7 @@ using EidTokenTest.Core.Verification;
 
 namespace EidTokenTest.Tests;
 
-/// M3 / B: untrusted certificate bytes are accepted only as ONE strict DER certificate (the same rules as on macOS).
+/// untrusted certificate bytes are accepted only as ONE strict DER certificate (the same rules as on macOS).
 public sealed class DerTests
 {
     /// Inputs that a lenient loader would take as a certificate, or that are not DER; null = no bytes at all.
@@ -23,6 +23,8 @@ public sealed class DerTests
         yield return ("null", null);
         yield return ("30 February", ImpossibleDate(leaf));
         yield return ("BOOLEAN 0x01", NonDerBoolean(pki.Issuing));
+        // The KeyUsage extension's OID 2.5.29.15 with a non-minimal first sub-identifier (0x80 …).
+        yield return ("non-minimal OID", TestPki.ReplaceFirst(leaf.RawData, [0x06, 0x03, 0x55, 0x1D, 0x0F], [0x06, 0x03, 0x80, 0x1D, 0x0F]));
     }
 
     /// The leaf's notBefore (UTCTime) rewritten to 30 February.

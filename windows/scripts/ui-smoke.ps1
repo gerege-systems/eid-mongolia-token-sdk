@@ -5,7 +5,8 @@
 #      first layout of its main page);
 #   3. UI Automation: the three section headings (token / certificates / login test), the reload button and the
 #      empty state "no token found" (no token on a CI machine) must be there;
-#   4. on failure: a screenshot, the UI Automation tree, the app log and stderr go to -OutDir.
+#   4. on failure: a screenshot of the app's own window (GitHub-hosted runners only), the UI Automation tree, the
+#      app log and stderr go to -OutDir.
 #
 # The process is always stopped by its own PID. Non-ASCII texts are written as \u escapes so the file reads the same
 # under any code page.
@@ -38,13 +39,22 @@ $stderr = Join-Path $OutDir 'eid-token-test.stderr.txt'
 $stdout = Join-Path $OutDir 'eid-token-test.stdout.txt'
 
 function Save-Evidence([System.Diagnostics.Process] $process) {
+    # A screenshot of the app's OWN window only (never the desktop), and only on a GitHub-hosted runner.
     try {
-        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-        $bitmap = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
-        $bitmap.Save((Join-Path $OutDir 'ui-smoke.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose(); $bitmap.Dispose()
+        if ($env:RUNNER_ENVIRONMENT -ne 'github-hosted') {
+            Write-Host "screenshot skipped (runner environment '$($env:RUNNER_ENVIRONMENT)')"
+        } elseif ($process -and -not $process.HasExited -and $process.MainWindowHandle -ne [IntPtr]::Zero) {
+            $rect = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle).Current.BoundingRectangle
+            if ($rect.Width -gt 0 -and $rect.Height -gt 0) {
+                $bitmap = New-Object System.Drawing.Bitmap ([int]$rect.Width), ([int]$rect.Height)
+                $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+                $graphics.CopyFromScreen([int]$rect.X, [int]$rect.Y, 0, 0, $bitmap.Size)
+                $bitmap.Save((Join-Path $OutDir 'ui-smoke-window.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+                $graphics.Dispose(); $bitmap.Dispose()
+            }
+        } else {
+            Write-Host "screenshot skipped (no app window)"
+        }
     } catch { Write-Host "screenshot failed: $_" }
     if (Test-Path $log) { Copy-Item $log (Join-Path $OutDir 'eid-token-test.log') }
     try {

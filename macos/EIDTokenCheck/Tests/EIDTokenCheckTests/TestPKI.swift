@@ -174,12 +174,23 @@ struct Fixture: @unchecked Sendable {
 
     /// Another certificate of the issuing CA's (≙04) subject: `sameKey` = the same key (a re-issued / legacy copy:
     /// same subject and key, different DER), otherwise a new key (same name, different key). Issued by ≙03.
-    func issuingCACopy(sameKey: Bool, serial: UInt8 = 0x44) -> TestEntity {
+    func issuingCACopy(sameKey: Bool, serial: UInt8 = 0x44, notBefore: Date? = nil, notAfter: Date? = nil) -> TestEntity {
         let key = sameKey ? ca.key : P256.Signing.PrivateKey()
         return TestEntity(key: key, name: ca.name, serial: [serial], der: TestPKI.certificate(
             serial: [serial], subject: ca.name, key: key.publicKey, issuer: intermediate.name, issuerKey: intermediate.key,
-            notBefore: now - 100 * Self.day, notAfter: now + 100 * Self.day,
+            notBefore: notBefore ?? now - 100 * Self.day, notAfter: notAfter ?? now + 100 * Self.day,
             extensions: [TestPKI.caBasicConstraints, TestPKI.caKeyUsage] + caURLs))
+    }
+
+    /// An AUTH certificate (the token profile, like `leaf`) issued by `issuer`.
+    func authLeaf(issuedBy issuer: TestEntity) -> TestEntity {
+        let key = P256.Signing.PrivateKey()
+        let name = E.name(serialNumber: "PNOMN-TEST0002", given: "Тест", surname: "Хэрэглэгч")
+        return TestEntity(key: key, name: name, serial: [0x0B], der: TestPKI.certificate(
+            serial: [0x0B], subject: name, key: key.publicKey, issuer: issuer.name, issuerKey: issuer.key,
+            notBefore: now - 10 * Self.day, notAfter: now + 355 * Self.day,
+            extensions: [TestPKI.authKeyUsage, TestPKI.eku(OID.ekuClientAuth, OID.ekuEmailProtection),
+                         TestPKI.aia(ocsp: Self.ocspURL), TestPKI.cdp(Self.crlURL)]))
     }
 
     /// The bundled set: root, 02, 03, 04 (the pinned issuing CA). `withOrg` also bundles the sibling CA (≙05).

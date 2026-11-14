@@ -26,10 +26,29 @@ public sealed class TrustAnchors
     public const string IssuingCaSha256 = "87b8db6862abde5e4a07a10c2c696afe5cb6aea072b9f3f9755e73ce79f546fc";
 
     /// The issuing CA is the intermediate whose SHA-256 is <see cref="IssuingCaSha256"/> — the pin cannot be replaced
-    /// from outside this assembly.
+    /// from outside this assembly. Every certificate must be one strict DER certificate
+    /// (<see cref="Der.IsStrictCertificate"/>); anything else throws <see cref="ArgumentException"/> — a broken trust
+    /// set is never silently ignored (the same on macOS).
     public TrustAnchors(IEnumerable<X509Certificate2> roots, IEnumerable<X509Certificate2> intermediates)
-        : this(roots, intermediates, intermediates?.FirstOrDefault(c => Sha256Hex(c) == IssuingCaSha256))
+        : this(Strict(roots, nameof(roots)), Strict(intermediates, nameof(intermediates)), pinned: true)
     {
+    }
+
+    private TrustAnchors(List<X509Certificate2> roots, List<X509Certificate2> intermediates, bool pinned)
+        : this(roots, intermediates, pinned ? intermediates.FirstOrDefault(c => Sha256Hex(c) == IssuingCaSha256) : null)
+    {
+    }
+
+    private static List<X509Certificate2> Strict(IEnumerable<X509Certificate2> certificates, string name)
+    {
+        ArgumentNullException.ThrowIfNull(certificates, name);
+        var list = certificates.ToList();
+        for (var i = 0; i < list.Count; i++)
+        {
+            if (!Der.IsStrictCertificate(list[i].RawData))
+                throw new ArgumentException("trust/: certificate #" + (i + 1) + " is not one strict DER certificate", name);
+        }
+        return list;
     }
 
     /// Tests only (internal): another issuing CA. <paramref name="issuingCa"/> must be one of
@@ -53,7 +72,9 @@ public sealed class TrustAnchors
     public X509Certificate2? IssuingCa { get; }
 
     /// The certificates bundled with this build (`trust/anchors/*.pem`, `trust/intermediates/*.pem` resources); the
-    /// issuing CA is the intermediate whose SHA-256 is <see cref="IssuingCaSha256"/>.
+    /// issuing CA is the intermediate whose SHA-256 is <see cref="IssuingCaSha256"/>. A resource that holds no
+    /// certificate, a PEM block that is not valid base64, or anything that is not one strict DER certificate throws
+    /// <see cref="InvalidOperationException"/> naming the file (the same rule as `TrustStore.load` on macOS).
     public static TrustAnchors Bundled()
     {
         return new TrustAnchors(Load("trust/anchors/"), Load("trust/intermediates/"));
@@ -72,11 +93,38 @@ public sealed class TrustAnchors
         {
             using var stream = assembly.GetManifestResourceStream(name)!;
             using var reader = new StreamReader(stream);
-            var collection = new X509Certificate2Collection();
-            collection.ImportFromPem(reader.ReadToEnd());
-            certificates.AddRange(collection);
+            foreach (var der in ParsePem(reader.ReadToEnd(), name)) certificates.Add(X509CertificateLoader.LoadCertificate(der));
         }
         return certificates;
+    }
+
+    /// The CERTIFICATE blocks of a PEM file, each one strict DER certificate; throws <see cref="InvalidOperationException"/>
+    /// naming <paramref name="name"/> otherwise (no block, unclosed block, bad base64, not strict DER).
+    internal static List<byte[]> ParsePem(string text, string name)
+    {
+        const string begin = "-----BEGIN CERTIFICATE-----", end = "-----END CERTIFICATE-----";
+        var output = new List<byte[]>();
+        var at = text.IndexOf(begin, StringComparison.Ordinal);
+        while (at >= 0)
+        {
+            var start = at + begin.Length;
+            var stop = text.IndexOf(end, start, StringComparison.Ordinal);
+            if (stop < 0) throw new InvalidOperationException(name + ": unclosed CERTIFICATE block");
+            byte[] der;
+            try
+            {
+                der = Convert.FromBase64String(text[start..stop]);
+            }
+            catch (FormatException)
+            {
+                throw new InvalidOperationException(name + ": a CERTIFICATE block is not valid base64");
+            }
+            if (!Der.IsStrictCertificate(der)) throw new InvalidOperationException(name + " is not one strict DER certificate");
+            output.Add(der);
+            at = text.IndexOf(begin, stop + end.Length, StringComparison.Ordinal);
+        }
+        if (output.Count == 0) throw new InvalidOperationException(name + ": no certificate");
+        return output;
     }
 
     /// The pinned issuing CA when it issued and signed <paramref name="certificate"/>, or null — the CA its OCSP / CRL

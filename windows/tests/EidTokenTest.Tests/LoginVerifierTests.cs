@@ -109,7 +109,7 @@ public sealed class LoginVerifierTests
     }
 
     /// The signature is otherwise valid (over the bound digest of that very challenge): only the length fails it —
-    /// before anything is signed, and (L8) without any network request.
+    /// before anything is signed, and without any network request.
     [Theory]
     [InlineData(0)]
     [InlineData(31)]
@@ -159,7 +159,7 @@ public sealed class LoginVerifierTests
         Assert.Empty(transport.Requested);
     }
 
-    /// M3 / L3: anything but one strict DER certificate — PEM, PKCS#7, PFX, trailing bytes, empty, null, a non-DER
+    /// anything but one strict DER certificate — PEM, PKCS#7, PFX, trailing bytes, empty, null, a non-DER
     /// BOOLEAN, an impossible date — is signature ✗ with no network request; nothing throws.
     [Fact]
     public async Task NonCertificateInputIsRejectedWithoutNetworkAndNeverThrows()
@@ -464,22 +464,37 @@ public sealed class LoginVerifierTests
         Reason.Assert(verifier.Chain(fromRoot, Now, []), CheckState.Fail, Reason.Not04);
     }
 
-    /// M4: a CA with the pinned 04's NAME but another key is not 04 — even when it issued the leaf and the path to the
-    /// root is otherwise valid.
+    /// The REAL 04 is pinned; an impostor CA with the same subject but another key, chained under the same root,
+    /// issues the AUTH certificate: the issuer pin rejects it (and OCSP / CRL have no issuer for it).
     [Fact]
-    public void SameNameDifferentKeyIsNot04()
+    public void SameSubjectDifferentKeyIssuerIsRejected()
+    {
+        using var pki = TestPki.Create();
+        using var impostor = pki.IssuingCopy(sameKey: false, to: Now.AddYears(2));     // covers the leaf's validity
+        using var leaf = pki.CreateLeaf(issuer: impostor);
+        var trust = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(pki.Issuing),
+             TestPki.PublicOnly(impostor)], TestPki.PublicOnly(pki.Issuing));
+        Reason.Assert(new LoginVerifier(trust, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail, Reason.Not04);
+        Assert.Null(trust.IssuerOf(leaf));
+    }
+
+    /// The pinned 04 has expired while a valid copy with the same subject and key exists: the chain row fails —
+    /// validity is judged on the pinned certificate, a copy does not stand in for it.
+    [Fact]
+    public void ExpiredPinned04WithValidSameKeyCopyFails()
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
-        using var impostor = pki.IssuingCopy(sameKey: false);
+        using var expiredPinned = pki.IssuingCopy(sameKey: true, from: Now.AddDays(-400), to: Now.AddDays(-1));
         var trust = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
-            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(pki.Issuing),
-             TestPki.PublicOnly(impostor)], TestPki.PublicOnly(impostor));
-        Reason.Assert(new LoginVerifier(trust, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail, Reason.Not04);
-        Assert.Null(trust.IssuerOf(leaf));                                        // OCSP / CRL have no issuer either
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(expiredPinned),
+             TestPki.PublicOnly(pki.Issuing)], TestPki.PublicOnly(expiredPinned));
+        Reason.Assert(new LoginVerifier(trust, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail,
+            "Гинжний гэрчилгээ (TEST ONLY Issuing CA) хүчинтэй хугацаанаас гадуур");
     }
 
-    /// M4: another copy of 04 (same subject and key, different DER) among the candidates is neither used nor a reason
+    /// another copy of 04 (same subject and key, different DER) among the candidates is neither used nor a reason
     /// to refuse: the path passes and carries the PINNED 04 DER.
     [Fact]
     public void LegacyCopyOf04IsNeitherUsedNorRefused()
@@ -498,7 +513,7 @@ public sealed class LoginVerifierTests
         Assert.Equal(4, cas.Count);
     }
 
-    /// B: an expired CA in the path fails the CHAIN row (the same on macOS).
+    /// an expired CA in the path fails the CHAIN row (the same on macOS).
     [Fact]
     public async Task ExpiredIntermediateFailsTheChain()
     {

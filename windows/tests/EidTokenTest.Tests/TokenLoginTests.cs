@@ -78,7 +78,7 @@ public sealed class TokenLoginTests
         Assert.Equal(new[] { "S1" }, source.SignedSerials);          // the token is addressed by serial, not by a slot ID
     }
 
-    /// L4: a token swapped in the same slot before signing is not found by its serial — refused before C_Login.
+    /// a token swapped in the same slot before signing is not found by its serial — refused before C_Login.
     [Fact]
     public void TokenSwappedInTheSlotIsNotFoundBySerial()
     {
@@ -95,7 +95,7 @@ public sealed class TokenLoginTests
         Assert.False(Pkcs11TokenReader.IsSameToken("", ""));
     }
 
-    /// B: CKR_USER_ALREADY_LOGGED_IN is a login this reader did not make — refused, the same as on macOS.
+    /// CKR_USER_ALREADY_LOGGED_IN is a login this reader did not make — refused, the same as on macOS.
     [Fact]
     public void UserAlreadyLoggedInIsRefused()
     {

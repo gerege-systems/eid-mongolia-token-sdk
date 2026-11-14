@@ -60,13 +60,19 @@ Apple-ийн платформын код (Security.framework) — сервер �
 ## 3. Хурдан эхлэх
 
 Багцыг репогийн **GitHub Releases**-ээс авна: `eid-token-test-macos.zip`, `eid-token-test-windows-x64.zip` ба
-`SHA256SUMS` (татсан zip-ээ `shasum -a 256 -c SHA256SUMS` / PowerShell `Get-FileHash`-аар тулга). Release бүрийг tag
-(`v…`)-аас CI-тэй яг ижил алхмаар (unit тест орно) бүтээнэ. Эсвэл §4-өөр эх кодоос бүтээнэ.
+`SHA256SUMS` (хоёр zip-ийн SHA-256 нь release-ийн тайлбарт ч бий; татсан zip-ээ `shasum -a 256 -c SHA256SUMS` /
+PowerShell `Get-FileHash`-аар тулга). Checksum нь зөвхөн **татсан файл бүтэн, өөрчлөгдөөгүйг** (release хуудастай
+таарч буйг) харуулна — хэн бүтээснийг батлахгүй (build-үүд code-signing-гүй). Release-ийг `main` дээрх commit-ийн tag
+(`v…`)-аас CI-тэй ижил алхмаар (unit тест орно) бүтээнэ; macOS-ийн release build нь runner-ийн cache-ийг огт ашиглахгүй
+(OpenSC, OpenSSL, XcodeGen-ийг SHA-256-аар бэхэлсэн эх сурвалжаас шинээр). Эсвэл §4-өөр эх кодоос бүтээнэ.
 
 ### macOS
 
 - **Шаардлага:** macOS 14 ба түүнээс хойш, Apple Silicon эсвэл Intel (апп, модуль, CLI нь universal). Нэмэлт драйвер,
   OpenSC суулгах шаардлагагүй — модуль апп дотор (`Contents/Frameworks/`); токеныг macOS-ийн PC/SC-ээр уншина.
+- **Бичдэг файлууд:** апп систем, keychain-д юу ч бичихгүй; түр хавтсанд OpenSC-ийн жижиг тохиргооны файл, эхлэх бүрд
+  `~/Library/Logs/eid-token-test.log`-д эхлэлийн мөр (`main page loaded` эсвэл эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч
+  биш). `EID_TOKEN_TEST_LOG` орчны хувьсагчаар өөр зам заана.
 - **Гарын үсэг:** энэ build-үүд **ad-hoc** гарын үсэгтэй, Apple-аар **notarize хийгдээгүй**. Браузераар татсан zip
   «quarantine» тэмдэгтэй тул Gatekeeper анхны нээлт дээр зогсооно. Эх кодоос өөрөө бүтээвэл (§4) энэ асуудал гарахгүй.
 - **Анхны нээлтээс ӨМНӨ** quarantine-ийг арилга — zip дээр (задлахаас өмнө) эсвэл задалсан **бүх хавтас** дээр (апп,
@@ -85,8 +91,10 @@ Apple-ийн платформын код (Security.framework) — сервер �
 
 - **Шаардлага:** Windows 10 1809 (17763) ба түүнээс хойш эсвэл Windows 11, **x64**. Суулгалт шаардахгүй
   (self-contained: .NET 10 ба Windows App SDK хавтас дотроо). Smart Card service (`SCardSvr`) ажиллаж байх ёстой
-  (анхдагчаар асаалттай). Апп Windows-ийн гэрчилгээний санд юу ч суулгахгүй, registry бичихгүй; түр хавтсанд зөвхөн
-  OpenSC-ийн жижиг тохиргооны файл үүсгэнэ.
+  (анхдагчаар асаалттай). Апп Windows-ийн гэрчилгээний санд юу ч суулгахгүй, registry бичихгүй. Бичдэг файлууд: түр
+  хавтсанд OpenSC-ийн жижиг тохиргооны файл; эхлэх бүрд `eid-token-test.log` — exe-ийн хажууд, тэр хавтас бичигдэхгүй
+  бол `%TEMP%`-д (эхлэлийн мөр `main page loaded` эсвэл эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч биш;
+  `EID_TOKEN_TEST_LOG`-оор өөр зам заана).
 - **Анхны нээлт:** exe code-signing гарын үсэггүй тул SmartScreen «Windows protected your PC» гарч болно →
   «More info» → «Run anyway». Интернэтээс татсан zip бол задлахаас өмнө Properties → «Unblock».
 
@@ -212,7 +220,7 @@ DER (`ECDSA-Sig-Value`) шаарддаг сан (Java `SHA256withECDSA`, OpenSSL
 - `C_Login` нь `CKR_USER_ALREADY_LOGGED_IN` буцаавал (тухайн session-д та өөрөө нэвтрээгүй — өөр session нэвтэрсэн):
   нэвтэрсэн гэж бүү тооц, гарын үсэг бүү зур — татгалз. Тест аппууд хоёр платформд ингэж татгалзана.
 - Гарын үсэг зурахын өмнө токеныг **serial-аар дахин** ол (slot ID-г санаж бүү ашигла): тэр slot-д өөр токен залгагдсан
-  бол `C_Login`-оос өмнө татгалз. Тест аппууд хоёр платформд ингэнэ.
+  бол `C_Login`-оос өмнө татгалз; хоосон serial-аар токен бүү сонго. Тест аппууд хоёр платформд ингэнэ.
 - PIN-ийг лог, файл, санах ойд үлдээхгүй; ашигласны дараа устга. PIN тайлах (PUK) энэ багцын хүрээнд биш — түгжигдсэн
   токены эзэмшигч токен олгосон байгууллагад хандана.
 
@@ -341,8 +349,11 @@ Mongolian National Root CA                  trust/anchors/01-…        (цор�
 1. **Шууд олгогч нь зөвхөн 04 (pin).** Pin нь `04` файлын DER-ийн SHA-256 (`87b8db68…46fc`). Бүтээсэн замын [1]
    элемент (AUTH гэрчилгээний шууд олгогч) нь pin хийсэн 04-тэй **ижил subject БА ижил нийтийн түлхүүртэй** байна;
    үгүй бол → ✗. Платформын зам бүтээгч (macOS keychain, Windows-ийн CA store) 04-ийн өөр хуулбарыг (ижил subject +
-   түлхүүр, өөр DER) олсон ч тэр хуулбарыг **ашиглахгүй**, бас татгалзах шалтгаан болгохгүй: гарын үсэг, цуцлалт,
-   хугацааг үргэлж `trust/` дахь pin хийсэн 04-ийн DER-ээр шалгана. Ижил нэртэй өөр түлхүүртэй CA → ✗. Ижил үндэс
+   түлхүүр, өөр DER) замдаа оруулж болно — тэгвэл платформ AUTH гэрчилгээний гарын үсгийг тэр хуулбарын (ижил) түлхүүрээр
+   шалгаж, тэр хуулбарын хязгаарлалтыг (basicConstraints, pathLen …) хэрэглэнэ; платформын замын гэрчилгээ бүр тухайн
+   агшинд хүчинтэй байх ёстой (хоёр платформд ижил). Үүнээс хойш код зөвхөн `trust/` дахь pin хийсэн 04-ийг ашиглана:
+   `trust/`-ээс авсан замын шалгалт ба хугацаа (доор), олгогчийг тодорхойлох, OCSP / CRL-ийг шалгах. Ижил нэртэй өөр
+   түлхүүртэй CA → ✗. Ижил үндэс
    доорх өөр CA-ийн олгосон гэрчилгээ → ✗ — үүнд clientAuth-тэй relying party mTLS гэрчилгээ олгодог eID Mongolia
    **Organization** Issuing CA (05) ч орно; 05 нь `trust/`-д байхгүй, нэвтрэлтэд хэзээ ч тэнцэхгүй. 02 эсвэл 03-ын
    шууд олгосон гэрчилгээ → ✗.
@@ -352,6 +363,11 @@ Mongolian National Root CA                  trust/anchors/01-…        (цор�
    (`SecTrustSetKeychains` 10.12-оос хойш нөлөөгүй) ба .NET (Windows-ийн CA store-ийг хасах тохиргоогүй) аль аль нь
    завсрын CA-г зөвхөн өгсөн гэрчилгээнээс хайхыг хязгаарлаж чадахгүй тул энэ дүрмийг кодоороо хэрэгжүүлнэ; сүлжээнээс
    (AIA) завсрын CA татахыг хоёуланд нь унтраасан.
+
+   `trust/`-ийн файл (эсвэл `TrustAnchors` / `TrustStore`-д өгсөн гэрчилгээ) яг нэг хатуу DER гэрчилгээ биш бол ачаалах
+   үед **алдаа** (файлын нэртэй) — чимээгүй алгасахгүй: .NET `TrustAnchors.Bundled()` / `new TrustAnchors(…)` →
+   exception, Swift `TrustStore.load` / `TrustStore(anchors:intermediates:)` → `throw`; тест аппууд эхлэхдээ зогсоно,
+   `eid-token-check` exit 1.
 2. **AUTH профайл** (токены AUTH гэрчилгээний CA профайл: KeyUsage зөвхөн digitalSignature, EKU clientAuth +
    emailProtection, subject `serialNumber` = `PNOMN-…`):
    - KeyUsage өргөтгөл **байгаа** ба **яг {digitalSignature}** — өөр ямар ч бит (nonRepudiation, keyEncipherment …) → ✗;
@@ -448,7 +464,8 @@ http нь зөвхөн тээвэр) — firewall / proxy `ocsp.eidmongolia.mn`,
   хамааралгүй. `TrustAnchors.Bundled()` нь `trust/anchors/*.pem`, `trust/intermediates/*.pem` нэртэй embedded resource
   уншина (`EidTokenTest.Core.csproj`-ийн `EmbeddedResource`-ийг дагана), эсвэл
   `new TrustAnchors(roots, intermediates)`-аар `trust/`-ийн гэрчилгээг өөрөө өгнө — 04-ийг SHA-256 pin-ээр нь
-  (`TrustAnchors.IssuingCaSha256`) энэ байгуулагч өөрөө сонгоно; өөр олгогч CA өгөх public зам байхгүй.
+  (`TrustAnchors.IssuingCaSha256`) энэ байгуулагч өөрөө сонгоно; өөр олгогч CA өгөх public зам байхгүй. Шалгагч
+  Windows-оос гадна Linux дээр ч ажиллана — CI түүний unit тестийг `ubuntu-24.04` дээр ч ажиллуулдаг.
   `LoginVerifier` ба `HttpRevocationTransport`-ийг (дотроо нэг `HttpClient`) апп эхлэхэд **нэг удаа** үүсгээд бүх
   хүсэлтэд хуваалцана — хүсэлт бүрд шинээр бүү үүсгэ:
 
@@ -468,11 +485,11 @@ http нь зөвхөн тээвэр) — firewall / proxy `ocsp.eidmongolia.mn`,
   §6-ийн дүрмийг өөрийн хэл дээр хэрэгжүүл). Апп-д шингээхдээ OCSP / CRL хаяг нь энгийн `http://` тул App Transport
   Security-ийн exception (`NSAppTransportSecurity` → `NSExceptionDomains`: `ocsp.eidmongolia.mn`, `crl.eidmongolia.mn`,
   `NSExceptionAllowsInsecureHTTPLoads`) шаардлагатай — эс бөгөөс OCSP / CRL «шалгаж чадсангүй». `TrustStore.load` ба
-  `TrustStore(anchors:intermediates:)` нь 04-ийг pin-ээр нь өөрөө сонгоно.
+  `TrustStore(anchors:intermediates:)` нь 04-ийг pin-ээр нь өөрөө сонгоно (хоёулаа `throws`).
 
   ```swift
   // эхлэхэд нэг удаа
-  let verifier = LoginVerifier(trust: TrustStore.load(directory: trustDirectory), fetcher: URLSessionRevocationFetcher())
+  let verifier = LoginVerifier(trust: try TrustStore.load(directory: trustDirectory), fetcher: URLSessionRevocationFetcher())
   let origin = "login.example.mn"                      // ТОГТМОЛ (§6.1)
 
   // нэвтрэх бүрд
@@ -510,7 +527,7 @@ eid-token-check --module <зам> --serial <серийн дугаар> [--origin
 | Exit code | Утга |
 |---|---|
 | `0` | жагсаалт амжилттай / нэвтэрсэн |
-| `1` | шалгалт унасан, нэвтрээгүй, эсвэл токен татгалзсан (PIN-ий төлөв, eID гэрчилгээ алга, гэрчилгээ уншиж чадаагүй) |
+| `1` | шалгалт унасан, нэвтрээгүй, эсвэл токен татгалзсан (PIN-ий төлөв, eID гэрчилгээ алга, гэрчилгээ уншиж чадаагүй); `trust/` эвдэрхий |
 | `2` | буруу хэрэглээ (`--serial`-гүй `--login`, `--pin`, үл мэдэгдэх аргумент, буруу `--origin`, stdin терминал, хоосон PIN …) |
 | `3` | токен алга (эсвэл тэр serial-тай токен алга) эсвэл модуль ачаалагдсангүй |
 

@@ -21,6 +21,8 @@
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
     <Version>0.2.0</Version>
+    <!-- No debug symbols from NuGet packages in the published folder (the package check forbids *.pdb). -->
+    <CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
   </PropertyGroup>
 
   <!-- The OpenSC 0.26.1 PKCS#11 module (third_party/opensc), copied into opensc\ next to the exe with its licences.

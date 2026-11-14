@@ -75,7 +75,7 @@ final class ArgumentTests: XCTestCase {
         }
     }
 
-    /// L5: an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
+    /// an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
     func testUnknownArgumentIsNotEchoed() {
         XCTAssertEqual(CLIArguments.parse(["--module", "/m.so", "--serial", "S1", "--login", "482913"]),
                        .usage(CLIArguments.unknownArgument))
@@ -92,7 +92,7 @@ final class RefusalTests: XCTestCase {
 
     private func run(_ args: [String], source: FakeSource?, pin: FakePIN = FakePIN()) async -> (Int32, Output) {
         let output = Output()
-        let verifier = LoginVerifier(trust: TrustStore(anchors: [], intermediates: []), fetcher: NoNetwork())
+        let verifier = LoginVerifier(trust: try! TrustStore(anchors: [], intermediates: []), fetcher: NoNetwork())
         let cli = CLI(openSource: { path in
             guard let source else { throw TokenError.moduleLoad("PKCS#11 модуль олдсонгүй: \(path)") }
             return source
@@ -110,7 +110,7 @@ final class RefusalTests: XCTestCase {
         XCTAssertEqual(pinOutput.err.first, "eid-token-check: \(CLIArguments.pinOnCommandLine)")
     }
 
-    /// L5: a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
+    /// a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
     func testPositionalPINIsNeverPrinted() async {
         for json in [false, true] {
             let source = FakeSource(tokens: [token()])
@@ -123,7 +123,7 @@ final class RefusalTests: XCTestCase {
         }
     }
 
-    /// B: CKR_USER_ALREADY_LOGGED_IN is a login this reader did not make — refused, the same as on Windows.
+    /// CKR_USER_ALREADY_LOGGED_IN is a login this reader did not make — refused, the same as on Windows.
     func testUserAlreadyLoggedInIsRefused() {
         XCTAssertEqual(TokenError.from("C_Login", PKCS11Module.CKR_USER_ALREADY_LOGGED_IN), .alreadyLoggedIn)
         XCTAssertEqual(TokenError.alreadyLoggedIn.errorDescription,

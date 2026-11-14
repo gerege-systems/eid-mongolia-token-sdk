@@ -219,7 +219,7 @@ public sealed class OcspTests
         Reason.Assert(Eval(response, leaf, pki.Issuing), CheckState.Fail, Reason.CertIdMismatch);
     }
 
-    /// B: entries about other certificates — even malformed ones — are skipped; the matching entry decides.
+    /// entries about other certificates — even malformed ones — are skipped; the matching entry decides.
     [Fact]
     public void OtherEntriesAreSkippedEvenWhenMalformed()
     {
@@ -237,7 +237,7 @@ public sealed class OcspTests
         Assert.Equal(CheckState.Pass, result.State);
     }
 
-    /// B: a malformed entry for THIS certificate is ✗.
+    /// a malformed entry for THIS certificate is ✗.
     [Fact]
     public void MalformedMatchingEntryFails()
     {

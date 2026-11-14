@@ -20,9 +20,16 @@ final class AppModel: ObservableObject {
     @Published var confirmFinalTry = false
 
     private let service = TokenService()
-    private let verifier = LoginVerifier(
-        trust: TrustStore.load(directory: Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/trust")),
-        fetcher: URLSessionRevocationFetcher())
+    /// A broken bundled trust folder stops the app loudly (log + crash report) — never a login against partial trust.
+    private let verifier: LoginVerifier = {
+        do {
+            let trust = try TrustStore.load(directory: Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/trust"))
+            return LoginVerifier(trust: trust, fetcher: URLSessionRevocationFetcher())
+        } catch {
+            StartupLog.write("trust folder failed to load: \(error.localizedDescription)")
+            fatalError(error.localizedDescription)
+        }
+    }()
 
     var selected: TokenEntry? { tokens.first { $0.info.serial == selectedSerial } }
     var isLoading: Bool { listState == .loading }

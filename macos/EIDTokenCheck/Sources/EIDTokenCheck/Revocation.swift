@@ -250,7 +250,7 @@ enum Extensions {
         var out: [Header] = []
         for item in list {
             guard item.tag == DER.Tag.sequence, let f = item.children, (2...3).contains(f.count), f[0].tag == DER.Tag.oid,
-                  f.last?.tag == DER.Tag.octetString else { return nil }
+                  DER.isValidOID(f[0].value), f.last?.tag == DER.Tag.octetString else { return nil }
             var critical = false
             if f.count == 3 {
                 guard let flag = DER.boolean(f[1]) else { return nil }        // DER: 0xFF / 0x00 only

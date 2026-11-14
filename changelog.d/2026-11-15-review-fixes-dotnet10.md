@@ -33,6 +33,15 @@
   «Токен олдсонгүй»; screenshot + log on failure), a static check of `resources.pri` / `App.xbf` / `MainWindow.xbf`,
   and a macOS launch check (the app stays up; the same marker is required when the runner has a GUI session — the
   current macOS runner runs as a launchd daemon, so there only start + stay up is checked, with a warning).
+- **What (release / CI hardening):** a macOS release build uses no runner cache at all (OpenSC, OpenSSL, XcodeGen from
+  their SHA-256-pinned sources into a fresh per-run folder, deleted afterwards); the CI cache is per event type and
+  checked on every use (XcodeGen archive against the committed SHA-256, OpenSC outputs against their build manifest).
+  `release.yml`: dispatch only from main, the tagged commit must be on main, never overwrites a release that has files,
+  SHA-256 of both zips in the release text. No `.pdb` in the Windows package. The UI smoke screenshot shows only the
+  app's window (GitHub-hosted runners only). The .NET tests also run on Linux (`verifier-linux`, required by `gate`).
+- **What (alignment):** a broken `trust/` file stops loading with an error on both platforms; macOS checks OID encoding
+  like Windows; an empty token serial never selects a token on macOS either; the Windows chain evaluation checks time
+  validity like macOS.
 - **README:** origin is a server constant (never from request headers), licence, pin / chain rules, rejected-input row,
   shared transport sample, Swift = Apple platforms (ATS exception), Releases instead of PR artifacts, macOS
   quarantine before the first run and the «eid-token-check хариу өгөхгүй гацсан» entry.

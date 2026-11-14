@@ -139,11 +139,11 @@ internal sealed class TestPki : IDisposable
 
     /// Another certificate of the issuing CA's (≙04) subject, issued by ≙03: <paramref name="sameKey"/> = the same key
     /// (a re-issued / legacy copy: same subject and key, different DER), otherwise a new key (same name, other key).
-    public X509Certificate2 IssuingCopy(bool sameKey)
+    public X509Certificate2 IssuingCopy(bool sameKey, DateTimeOffset? from = null, DateTimeOffset? to = null)
     {
         using var key = sameKey ? Issuing.GetECDsaPrivateKey()! : ECDsa.Create(ECCurve.NamedCurves.nistP256);
-        return CreateCa(Issuing.GetNameInfo(X509NameType.SimpleName, false), Intermediate, Now.AddDays(-100), Now.AddDays(100), 0,
-            CaOcspUrl, CaCrlUrl, key);
+        return CreateCa(Issuing.GetNameInfo(X509NameType.SimpleName, false), Intermediate, from ?? Now.AddDays(-100),
+            to ?? Now.AddDays(100), 0, CaOcspUrl, CaCrlUrl, key);
     }
 
     /// A delegated OCSP responder certificate issued by <paramref name="issuer"/>.

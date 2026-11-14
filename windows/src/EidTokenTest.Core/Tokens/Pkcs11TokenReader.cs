@@ -30,6 +30,9 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
 
     private Pkcs11TokenReader(IPkcs11Library library) => _library = library;
 
+    /// Tests only: a reader over an already loaded (or fake) PKCS#11 library.
+    internal static Pkcs11TokenReader ForLibrary(IPkcs11Library library) => new(library);
+
     /// Loads and initialises the module (C_Initialize). Throws <see cref="TokenModuleException"/>.
     public static Pkcs11TokenReader Load(string modulePath)
     {

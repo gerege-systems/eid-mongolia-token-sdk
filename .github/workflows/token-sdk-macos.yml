@@ -13,7 +13,16 @@
 #
 # Runner: `vars.EID_MACOS_RUNNER` (JSON label set). The callers run this job only when it is set; an unset variable
 # therefore shows up as a skipped `macos` job, which `gate` / the release treat as a FAILURE (never as a pass).
-# OpenSC 0.26.1 is built with macos/scripts/build_opensc.sh once per script version and cached under $CI_CACHE.
+#
+# Build inputs on the (self-hosted) runner:
+#   release: true  — NOTHING pre-existing is used: OpenSC 0.26.1 + OpenSSL are built from their SHA-256-pinned source
+#                    tarballs (macos/scripts/build_opensc.sh), XcodeGen is downloaded and checked against the SHA-256
+#                    below, and every Swift / Xcode build directory lives in a fresh per-run folder that is deleted at
+#                    the end. A file left behind by any earlier (e.g. pull request) job cannot reach a release.
+#   release: false — CI cache under ~/ci-cache/eid-mongolia-token-sdk/<event> (pull_request, push, workflow_dispatch
+#                    each have their own folder). Checked on EVERY use: the XcodeGen archive against the SHA-256 below
+#                    (the binary is unpacked fresh each run); the OpenSC build outputs against the SHA-256 manifest
+#                    written when they were built (a mismatch fails the job).
 name: token-sdk-macos
 
 on:
@@ -22,6 +31,9 @@ on:
       ref:
         type: string
         default: ''
+      release:
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -44,34 +56,65 @@ jobs:
           persist-credentials: false
       - name: environment
         working-directory: .
+        env:
+          RELEASE: ${{ inputs.release }}
+          EVENT: ${{ github.event_name }}
         run: |
           echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
           echo "TMPDIR=$RUNNER_TEMP/" >> "$GITHUB_ENV"
-          echo "CI_CACHE=$HOME/ci-cache/eid-mongolia-token-sdk" >> "$GITHUB_ENV"
+          if [ "$RELEASE" = true ]; then
+            work="$RUNNER_TEMP/release-build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            rm -rf "$work"
+            mkdir -p "$work"
+            echo "CI_CACHE=$work" >> "$GITHUB_ENV"
+            echo "FRESH=true" >> "$GITHUB_ENV"
+            echo "release build: no cache, fresh folder $work"
+          else
+            case "$EVENT" in
+              pull_request|push|workflow_dispatch) ;;
+              *) echo "::error::unexpected event '$EVENT' for the CI cache"; exit 1 ;;
+            esac
+            echo "CI_CACHE=$HOME/ci-cache/eid-mongolia-token-sdk/$EVENT" >> "$GITHUB_ENV"
+            echo "FRESH=false" >> "$GITHUB_ENV"
+            echo "CI build: cache folder for '$EVENT' runs"
+          fi
           sw_vers
           xcodebuild -version
-      # Keyed by the build script: a changed recipe builds a new tree.
-      - name: OpenSC 0.26.1 (cache)
+      # Keyed by the build script: a changed recipe builds a new tree. The manifest is written right after the build
+      # and checked on every later use.
+      - name: OpenSC 0.26.1
         run: |
           key="$(shasum -a 256 scripts/build_opensc.sh | cut -c1-16)"
-          tree="$CI_CACHE/opensc/$key/opensc-0.26.1"
-          if [ ! -f "$tree/lib/opensc-pkcs11.so" ] || [ ! -f "$tree/share/doc/opensc/COPYING" ]; then
-            rm -rf "$CI_CACHE/opensc/$key"
-            mkdir -p "$CI_CACHE/opensc/$key"
+          dir="$CI_CACHE/opensc/$key"
+          tree="$dir/opensc-0.26.1"
+          manifest="$dir/outputs.sha256"
+          files=(lib/opensc-pkcs11.so lib/libopensc.12.dylib share/doc/opensc/COPYING share/doc/opensc/OPENSSL-LICENSE.txt)
+          if [ "$FRESH" != true ] && [ -f "$manifest" ]; then
+            if ! (cd "$tree" && shasum -a 256 -c "$manifest"); then
+              echo "::error::the cached OpenSC build in $dir does not match its manifest — remove that folder on the runner"
+              exit 1
+            fi
+          else
+            rm -rf "$dir"
+            mkdir -p "$dir"
             bash scripts/build_opensc.sh "$tree"
+            (cd "$tree" && shasum -a 256 "${files[@]}") > "$manifest"
           fi
+          cat "$manifest"
           echo "OPENSC_PREFIX=$tree" >> "$GITHUB_ENV"
+      # The archive is checked against the pinned SHA-256 on every use; the binary is unpacked fresh for this run.
       - name: xcodegen
         run: |
-          bin="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION/xcodegen/bin/xcodegen"
-          if [ ! -x "$bin" ]; then
-            d="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION"
-            mkdir -p "$d"
-            curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
-            echo "$XCODEGEN_SHA256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c
-            unzip -q -o "$RUNNER_TEMP/xcodegen.zip" -d "$d"
+          archive="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION.zip"
+          if [ ! -f "$archive" ]; then
+            mkdir -p "$(dirname "$archive")"
+            curl -fsSL -o "$archive" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
           fi
-          "$bin" generate
+          echo "$XCODEGEN_SHA256  $archive" | shasum -a 256 -c
+          d="$RUNNER_TEMP/xcodegen-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf "$d"
+          unzip -q "$archive" -d "$d"
+          "$d/xcodegen/bin/xcodegen" generate
       - name: unit tests (EIDTokenCheck, EIDTokenCLI)
         working-directory: macos/EIDTokenCheck
         run: swift test --parallel --scratch-path "$CI_CACHE/token-sdk-check-build"
@@ -178,3 +221,7 @@ jobs:
           path: ${{ runner.temp }}/eid-token-test-macos.zip
           if-no-files-found: error
           retention-days: 14
+      # A release build leaves nothing behind for a later job to pick up.
+      - name: remove the release build folder
+        if: ${{ always() && inputs.release }}
+        run: rm -rf "$CI_CACHE"

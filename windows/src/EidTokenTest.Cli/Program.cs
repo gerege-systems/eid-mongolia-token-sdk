@@ -7,6 +7,17 @@ using EidTokenTest.Core.Verification;
 // login flow and verifier as the «eID Token Test» app. Trust certificates are embedded (EidTokenTest.Core).
 Console.OutputEncoding = Encoding.UTF8;
 OpenScModule.IsolateConfig();                     // before opensc-pkcs11.dll is loaded (it reads OPENSC_CONF once)
+TrustAnchors trust;
+try
+{
+    trust = TrustAnchors.Bundled();
+}
+catch (InvalidOperationException ex)
+{
+    // A broken embedded trust set stops the tool loudly — never a check against partial trust.
+    Console.Error.WriteLine("eid-token-check: " + ex.Message);
+    return ExitCode.Failed;
+}
 using var transport = new HttpRevocationTransport();
 var readers = new List<Pkcs11TokenReader>();
 try
@@ -17,7 +28,7 @@ try
             readers.Add(reader);
             return reader;
         },
-        new LoginVerifier(TrustAnchors.Bundled(), transport), new StandardInputPin(), Console.Out, Console.Error);
+        new LoginVerifier(trust, transport), new StandardInputPin(), Console.Out, Console.Error);
     return await runner.RunAsync(args);
 }
 finally

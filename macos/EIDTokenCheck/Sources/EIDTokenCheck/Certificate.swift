@@ -58,7 +58,8 @@ public struct ParsedCertificate: Sendable, Equatable {
                   let list = inner[0].children else { return nil }
             for item in list {
                 guard item.tag == DER.Tag.sequence, let f = item.children, (2...3).contains(f.count),
-                      f[0].tag == DER.Tag.oid, let value = f.last, value.tag == DER.Tag.octetString else { return nil }
+                      f[0].tag == DER.Tag.oid, DER.isValidOID(f[0].value), let value = f.last,
+                      value.tag == DER.Tag.octetString else { return nil }
                 var critical = false
                 if f.count == 3 {
                     guard let flag = DER.boolean(f[1]) else { return nil }

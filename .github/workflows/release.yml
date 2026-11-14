@@ -1,11 +1,15 @@
-# release — a tag `v*` (or workflow_dispatch with an existing tag): builds both platforms with the SAME reusable
-# workflows as ci.yml (unit tests included) at that tag, then attaches to the GitHub Release of the tag:
+# release — a tag `v*` (or workflow_dispatch from main with an existing tag): builds both platforms with the SAME
+# reusable workflows as ci.yml (unit tests included) at that tag, then attaches to the GitHub Release of the tag:
 #
-#   eid-token-test-macos.zip, eid-token-test-windows-x64.zip, SHA256SUMS
+#   eid-token-test-macos.zip, eid-token-test-windows-x64.zip, SHA256SUMS (the two SHA-256 are also in the release text)
 #
-# The release is created when it does not exist yet (the tag must exist — nothing here creates a tag); an existing
-# release gets the files replaced. Nothing is uploaded unless BOTH platforms built: a skipped macOS job (runner
-# variable EID_MACOS_RUNNER unset) fails the release like a failed one. Not signed. No secrets besides the job token.
+# Guards (job `guard`, before anything is built):
+#   - workflow_dispatch only from refs/heads/main;
+#   - the tagged commit must be on main (an ancestor of origin/main) — a tag on an unmerged branch is not released.
+# The macOS build runs with `release: true`: no runner cache at all (see token-sdk-macos.yml).
+# Never overwrites: a release that already has files fails the run; an existing release without files gets them.
+# Nothing is uploaded unless BOTH platforms built: a skipped macOS job (runner variable EID_MACOS_RUNNER unset) fails
+# the release like a failed one. Nothing here creates a tag. Not signed. No secrets besides the job token.
 name: release
 
 on:
@@ -26,33 +30,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  guard:
+    runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.check.outputs.ref }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: check
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PUSHED_TAG: ${{ github.ref_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          if [ "$EVENT" = workflow_dispatch ]; then
+            [ "$REF" = refs/heads/main ] || { echo "::error::workflow_dispatch is allowed from refs/heads/main only (got $REF)"; exit 1; }
+            tag="$INPUT_TAG"
+          else
+            tag="$PUSHED_TAG"
+          fi
+          case "$tag" in v[0-9]*) ;; *) echo "::error::not a release tag: $tag"; exit 1 ;; esac
+          commit="$(git rev-parse --verify "refs/tags/$tag^{commit}")" || { echo "::error::tag $tag does not exist"; exit 1; }
+          git rev-parse --verify refs/remotes/origin/main >/dev/null
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "::error::$tag ($commit) is not on main"; exit 1
+          fi
+          echo "$tag -> $commit (on main)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ref=$commit" >> "$GITHUB_OUTPUT"
+
   macos:
+    needs: guard
     if: vars.EID_MACOS_RUNNER != ''
     uses: ./.github/workflows/token-sdk-macos.yml
     with:
-      ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+      ref: ${{ needs.guard.outputs.ref }}
+      release: true
 
   windows:
+    needs: guard
     uses: ./.github/workflows/token-sdk-windows.yml
     with:
-      ref: ${{ github.event_name == 'push' && github.ref || format('refs/tags/{0}', inputs.tag) }}
+      ref: ${{ needs.guard.outputs.ref }}
 
   publish:
     if: always()
-    needs: [macos, windows]
+    needs: [guard, macos, windows]
     runs-on: ${{ fromJSON(vars.EID_LIGHT_RUNNER || '"ubuntu-24.04"') }}
     timeout-minutes: 15
     permissions:
       contents: write
     steps:
-      - name: both platforms built
+      - name: guard and both platforms passed
         shell: bash
         env:
+          GUARD: ${{ needs.guard.result }}
           MACOS: ${{ needs.macos.result }}
           WINDOWS: ${{ needs.windows.result }}
         run: |
-          echo "macos=$MACOS windows=$WINDOWS"
-          [ "$MACOS" = success ] && [ "$WINDOWS" = success ]
+          echo "guard=$GUARD macos=$MACOS windows=$WINDOWS"
+          [ "$GUARD" = success ] && [ "$MACOS" = success ] && [ "$WINDOWS" = success ]
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
         with:
           name: eid-token-test-macos
@@ -76,14 +120,28 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.tag }}
+          TAG: ${{ needs.guard.outputs.tag }}
         run: |
           set -eu
-          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG"; exit 1 ;; esac
           files=(eid-token-test-macos.zip eid-token-test-windows-x64.zip SHA256SUMS)
+          {
+            echo "eID Mongolia token SDK $TAG — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module."
+            echo
+            echo "SHA-256 (also in SHA256SUMS):"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "The checksums show that a download is complete and unchanged against this page; they do not prove who built the files (the builds are not code-signed). See README.md."
+          } > notes.md
           if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${files[@]}" -R "$REPO" --clobber
+            count="$(gh release view "$TAG" -R "$REPO" --json assets --jq '.assets | length')"
+            if [ "$count" != 0 ]; then
+              echo "::error::release $TAG already has $count file(s) — nothing is overwritten"; exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" -R "$REPO"
+            gh release edit "$TAG" -R "$REPO" --notes-file notes.md
           else
-            gh release create "$TAG" "${files[@]}" -R "$REPO" --verify-tag --title "$TAG" \
-              --notes "eID Mongolia token SDK $TAG — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module. Check the files against SHA256SUMS. See README.md."
+            gh release create "$TAG" "${files[@]}" -R "$REPO" --verify-tag --title "$TAG" --notes-file notes.md
           fi

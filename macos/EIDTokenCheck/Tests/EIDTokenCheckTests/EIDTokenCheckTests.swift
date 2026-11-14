@@ -84,6 +84,15 @@ final class DERTests: XCTestCase {
         XCTAssertNil(gen("20261114120000,1Z"))                 // comma
     }
 
+    func testOIDEncoding() {
+        XCTAssertTrue(DER.isValidOID(OID.keyUsage))
+        XCTAssertTrue(DER.isValidOID(OID.ecdsaWithSHA256))
+        XCTAssertFalse(DER.isValidOID([]))
+        XCTAssertFalse(DER.isValidOID([0x55, 0x1D, 0x8F]))              // last byte continues
+        XCTAssertFalse(DER.isValidOID([0x55, 0x80, 0x1D]))              // sub-identifier starts with 0x80
+        XCTAssertFalse(DER.isValidOID([0x80, 0x01]))
+    }
+
     func testDERBooleanAndInteger() {
         XCTAssertEqual(DER.boolean(DERNode(tag: 0x01, raw: [], value: [0xFF])), true)
         XCTAssertEqual(DER.boolean(DERNode(tag: 0x01, raw: [], value: [0x00])), false)
@@ -118,9 +127,11 @@ final class DERTests: XCTestCase {
         let notBefore = E.utc(f.leaf.parsed.notBefore)
         let impossible = replacingFirst(notBefore, with: E.tlv(0x17, Array("260230120000Z".utf8)), in: f.leaf.der)
         let booleanOne = replacingFirst([0x01, 0x01, 0xFF], with: [0x01, 0x01, 0x01], in: f.ca.der)
+        // The KeyUsage extension's OID 2.5.29.15 with a non-minimal first sub-identifier (0x80 …).
+        let badOID = replacingFirst([0x06, 0x03, 0x55, 0x1D, 0x0F], with: [0x06, 0x03, 0x80, 0x1D, 0x0F], in: f.leaf.der)
         return [("PEM", Array(pem.utf8)), ("PKCS#7", pkcs7), ("PFX", pfx), ("trailing byte", f.leaf.der + [0x00]),
                 ("two certificates", f.leaf.der + f.ca.der), ("empty", []), ("30 February", impossible),
-                ("BOOLEAN 0x01", booleanOne)]
+                ("BOOLEAN 0x01", booleanOne), ("non-minimal OID", badOID)]
     }
 
     func testKeyUsageBits() {
@@ -174,7 +185,7 @@ final class SignatureTests: XCTestCase {
         XCTAssertEqual(check(f, f.tokenSignature(challenge: challenge)).status, .passed)
     }
 
-    /// L2: no public API verifies a caller-supplied digest (compile-time: `SignatureVerifier.verifyP256` is internal;
+    /// no public API verifies a caller-supplied digest (compile-time: `SignatureVerifier.verifyP256` is internal;
     /// only the (origin, challenge) path exists for callers).
     func testDigestIsAlwaysComputedHere() {
         let f = Fixture()
@@ -281,19 +292,33 @@ final class ChainTests: XCTestCase {
         }
     }
 
-    /// M4: a CA with the pinned 04's NAME but another key is not 04 — even when it is the one that issued the leaf
-    /// and the path to the root is otherwise valid.
-    func testSameNameDifferentKeyIsNot04() {
+    /// The REAL 04 is pinned; an impostor CA with the same subject but another key, chained under the same root,
+    /// issues the AUTH certificate: the issuer pin rejects it (and OCSP / CRL have no issuer for it).
+    func testSameSubjectDifferentKeyIssuerIsRejected() {
         let f = Fixture()
         let impostor = f.issuingCACopy(sameKey: false)
+        let leaf = f.authLeaf(issuedBy: impostor)
         let trust = TrustStore(anchors: [f.root.der], intermediates: [f.national.der, f.intermediate.der, f.ca.der, impostor.der],
-                               issuingCA: impostor.der)
-        let r = ChainCheck.chain(leaf: f.leaf.parsed, trust: trust, now: f.now)
+                               issuingCA: f.ca.der)
+        let r = ChainCheck.chain(leaf: leaf.parsed, trust: trust, now: f.now)
         assertCheck(r.result, .failed, Reason.not04)
-        XCTAssertNil(trust.issuingCA(of: f.leaf.parsed))                      // OCSP / CRL have no issuer either
+        XCTAssertNil(trust.issuingCA(of: leaf.parsed))
     }
 
-    /// M4: another copy of 04 (same subject and key, different DER) among the candidates is neither used nor a
+    /// The pinned 04 has expired while a valid copy with the same subject and key exists: the chain row fails —
+    /// validity is judged on the pinned certificate, a copy does not stand in for it.
+    func testExpiredPinned04WithValidSameKeyCopyFails() {
+        let f = Fixture()
+        let expiredPinned = f.issuingCACopy(sameKey: true, serial: 0x45, notBefore: f.now - 400 * Fixture.day,
+                                            notAfter: f.now - Fixture.day)
+        let trust = TrustStore(anchors: [f.root.der],
+                               intermediates: [f.national.der, f.intermediate.der, expiredPinned.der, f.ca.der],
+                               issuingCA: expiredPinned.der)
+        assertCheck(ChainCheck.chain(leaf: f.leaf.parsed, trust: trust, now: f.now).result, .failed,
+                    "Гинжний гэрчилгээ (TEST ONLY Issuing CA) хүчинтэй хугацаанаас гадуур")
+    }
+
+    /// another copy of 04 (same subject and key, different DER) among the candidates is neither used nor a
     /// reason to refuse: the path passes and carries the PINNED 04 DER.
     func testLegacyCopyOf04IsNeitherUsedNorRefused() {
         let f = Fixture()
@@ -306,7 +331,7 @@ final class ChainTests: XCTestCase {
         XCTAssertEqual(r.chain.map(\.der), [f.leaf.der, f.ca.der, f.intermediate.der, f.national.der, f.root.der])
     }
 
-    /// B: an expired CA in the path fails the CHAIN row (the same on Windows).
+    /// an expired CA in the path fails the CHAIN row (the same on Windows).
     func testExpiredIntermediateFailsTheChain() {
         let probe = Fixture()
         let f = Fixture(intermediateNotAfter: probe.now - Fixture.day)
@@ -385,21 +410,45 @@ final class ChainTests: XCTestCase {
         try pem(f.intermediate.der).write(to: dir.appendingPathComponent("intermediates/03.pem"), atomically: true, encoding: .utf8)
         try Data(f.ca.der).write(to: dir.appendingPathComponent("intermediates/04.der"))
         try "not a certificate".write(to: dir.appendingPathComponent("intermediates/readme.txt"), atomically: true, encoding: .utf8)
-        let store = TrustStore.load(directory: dir)
+        let store = try TrustStore.load(directory: dir)
         XCTAssertEqual(store.anchors, [f.root.der])
         XCTAssertEqual(store.intermediates, [f.national.der, f.intermediate.der, f.ca.der])
         XCTAssertNil(store.issuingCA)                     // the test CA is not the pinned 04
         XCTAssertNil(TrustStore(anchors: [], intermediates: [], issuingCA: f.ca.der).issuingCA)
-        // L1: the public initializer enforces the pin — a test CA can only be injected through the internal one.
-        XCTAssertNil(TrustStore(anchors: [f.root.der], intermediates: [f.national.der, f.intermediate.der, f.ca.der]).issuingCA)
+        // the public initializer enforces the pin — a test CA can only be injected through the internal one.
+        XCTAssertNil(try TrustStore(anchors: [f.root.der], intermediates: [f.national.der, f.intermediate.der, f.ca.der]).issuingCA)
         XCTAssertEqual(f.trust.issuingCA(of: f.leaf.parsed)?.der, f.ca.der)
         XCTAssertNil(f.trust.issuingCA(of: f.ca.parsed))
+    }
+
+    /// A certificate file in trust/ that is not one strict DER certificate stops loading with an error naming the file
+    /// (the same on Windows) — never silently skipped. Also the public initializer.
+    func testBrokenTrustFolderFailsLoudly() throws {
+        let f = Fixture()
+        let cases: [(String, Data)] = [
+            ("intermediates/bad.pem", Data("-----BEGIN CERTIFICATE-----\n!!!\n-----END CERTIFICATE-----\n".utf8)),
+            ("intermediates/empty.pem", Data("-----BEGIN CERTIFICATE-----\n".utf8)),
+            ("intermediates/trailing.der", Data(f.ca.der + [0x00])),
+            ("anchors/boolean.cer", Data(replacingFirst([0x01, 0x01, 0xFF], with: [0x01, 0x01, 0x01], in: f.root.der))),
+        ]
+        for (path, data) in cases {
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("eid-trust-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: dir) }
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("anchors"), withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: dir.appendingPathComponent("intermediates"), withIntermediateDirectories: true)
+            if !path.hasPrefix("anchors/") { try Data(f.root.der).write(to: dir.appendingPathComponent("anchors/root.der")) }
+            try data.write(to: dir.appendingPathComponent(path))
+            XCTAssertThrowsError(try TrustStore.load(directory: dir), path) { error in
+                XCTAssertEqual(error as? TrustStoreError, .notACertificate(path))
+            }
+        }
+        XCTAssertThrowsError(try TrustStore(anchors: [f.root.der], intermediates: [f.ca.der + [0x00]]))
     }
 
     /// The shipped trust/ folder: one root, 02, 03, 04; 04 is the pinned issuing CA; every certificate is signed by
     /// its bundled parent (signatures only, no network).
     func testShippedTrustFolder() throws {
-        let store = TrustStore.load(directory: RepoTrust.directory)
+        let store = try TrustStore.load(directory: RepoTrust.directory)
         let all = (store.anchors + store.intermediates).map(TrustStore.sha256Hex).sorted()
         XCTAssertEqual(all, [
             "56f3d1ca7f282287619773905aa0cd7a427d4f95dc0ed7b6733963a89bc31237",     // 03 Gerege Issuing CA
@@ -410,7 +459,7 @@ final class ChainTests: XCTestCase {
         XCTAssertEqual(store.anchors.count, 1)
         let issuing = try XCTUnwrap(store.issuingCA)
         XCTAssertEqual(TrustStore.sha256Hex(issuing), TrustStore.issuingCASHA256)
-        XCTAssertEqual(TrustStore(anchors: store.anchors, intermediates: store.intermediates).issuingCA, issuing)
+        XCTAssertEqual(try TrustStore(anchors: store.anchors, intermediates: store.intermediates).issuingCA, issuing)
         let parsed = (store.anchors + store.intermediates).compactMap { ParsedCertificate(der: $0) }
         for cert in parsed where !store.anchors.contains(cert.der) {
             XCTAssertTrue(parsed.contains { $0.der != cert.der && cert.isSigned(by: $0) == true },
@@ -539,7 +588,7 @@ final class OCSPTests: XCTestCase {
         assertCheck(eval(f, f.ocsp(certID: f.certID(issuerName: f.root.name))), .failed, Reason.certIDMismatch)
     }
 
-    /// B: entries about other certificates — even malformed ones — are skipped; the matching entry decides.
+    /// entries about other certificates — even malformed ones — are skipped; the matching entry decides.
     func testOtherEntriesAreSkippedEvenWhenMalformed() {
         let f = Fixture()
         let other = E.seq(f.certID(serial: [0x05]), [0x80, 0x00], E.gtime(f.now - 60))
@@ -549,7 +598,7 @@ final class OCSPTests: XCTestCase {
         XCTAssertEqual(r.status, .passed, r.reason)
     }
 
-    /// B: a malformed entry for THIS certificate is ✗.
+    /// a malformed entry for THIS certificate is ✗.
     func testMalformedMatchingEntryFails() {
         let f = Fixture()
         assertCheck(eval(f, f.ocsp(singleSuffix: E.int([1]))), .failed, Reason.ocspMalformed)        // trailing element
@@ -686,7 +735,7 @@ final class LoginVerifierTests: XCTestCase {
         XCTAssertTrue(requests.isEmpty)
     }
 
-    /// L8: a challenge that is not exactly 32 bytes — even with a valid signature over it — is signature ✗, the
+    /// a challenge that is not exactly 32 bytes — even with a valid signature over it — is signature ✗, the
     /// rest «шалгаж чадсангүй», and NO network request.
     func testWrongLengthChallengeMakesNoNetworkRequest() async {
         let f = Fixture()
@@ -698,7 +747,7 @@ final class LoginVerifierTests: XCTestCase {
         }
     }
 
-    /// M3 / L3: anything but one strict DER certificate → signature ✗, no network.
+    /// anything but one strict DER certificate → signature ✗, no network.
     func testNonCertificateInputIsRejectedWithoutNetwork() async {
         let f = Fixture()
         for (name, bytes) in DERTests.nonCertificates(f) {
@@ -816,7 +865,7 @@ final class LoginVerifierTests: XCTestCase {
         XCTAssertTrue(report.checks[1].reason.contains("OCSP: AIA алга"), report.checks[1].reason)
     }
 
-    /// B: an expired CA in the path fails the chain row in the full login as well.
+    /// an expired CA in the path fails the chain row in the full login as well.
     func testExpiredIntermediateIsNotLoggedIn() async {
         let probe = Fixture()
         let f = Fixture(intermediateNotAfter: probe.now - Fixture.day)
@@ -827,7 +876,7 @@ final class LoginVerifierTests: XCTestCase {
 
     func testUnknownIssuerCannotCheckRevocation() async {
         let f = Fixture()
-        let (report, stub) = await verify(f, trust: TrustStore(anchors: [f.root.der], intermediates: []))
+        let (report, stub) = await verify(f, trust: try! TrustStore(anchors: [f.root.der], intermediates: []))
         assertCheck(row(report, .chain), .unavailable, "Олгогч CA (04) апп-д алга")
         assertCheck(row(report, .ocsp), .unavailable, "Олгогч CA (04) апп-д алга")
         assertCheck(row(report, .crl), .unavailable, "Олгогч CA (04) апп-д алга")

@@ -52,7 +52,7 @@ public sealed class CliArgumentTests
     public void OtherUsageErrors(string line, string reason) =>
         Assert.Equal(reason, CliArguments.Parse(line.Length == 0 ? [] : line.Split(' ')).UsageError);
 
-    /// L5: an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
+    /// an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
     [Fact]
     public void UnknownArgumentIsNotEchoed()
     {
@@ -100,7 +100,7 @@ public sealed class CliRefusalTests
         Assert.Equal(0, source.SignCalls);
     }
 
-    /// L5: a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
+    /// a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

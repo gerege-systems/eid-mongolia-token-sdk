@@ -208,7 +208,9 @@ public final class TokenReader: TokenSource {
         }
     }
 
+    /// The token whose serial is `serial` right now; an empty serial never selects a token (the same on Windows).
     private func find(_ serial: String) throws -> TokenInfo {
+        guard !serial.isEmpty else { throw TokenError.tokenNotFound }
         for slot in try module.slots() {
             if let info = try? module.tokenInfo(slot: slot), info.serial == serial { return info }
         }

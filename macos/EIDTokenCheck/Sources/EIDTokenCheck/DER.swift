@@ -77,10 +77,23 @@ public enum DER {
 
     // MARK: Values
 
-    /// OID content bytes of an AlgorithmIdentifier SEQUENCE.
+    /// OID content bytes of an AlgorithmIdentifier SEQUENCE (a valid DER OID, `isValidOID`).
     public static func algorithmOID(_ node: DERNode) -> [UInt8]? {
-        guard node.tag == Tag.sequence, let first = node.children?.first, first.tag == Tag.oid else { return nil }
+        guard node.tag == Tag.sequence, let first = node.children?.first, first.tag == Tag.oid,
+              isValidOID(first.value) else { return nil }
         return first.value
+    }
+
+    /// DER OBJECT IDENTIFIER content, the same rule as the Windows reader: at least one byte, every sub-identifier in
+    /// minimal base-128 (it does not start with 0x80) and the last byte without the continuation bit.
+    public static func isValidOID(_ value: [UInt8]) -> Bool {
+        guard let last = value.last, last & 0x80 == 0 else { return false }
+        var startOfSubidentifier = true
+        for byte in value {
+            if startOfSubidentifier && byte == 0x80 { return false }
+            startOfSubidentifier = byte & 0x80 == 0
+        }
+        return true
     }
 
     /// BIT STRING content without the unused-bits byte (only whole-byte strings: signatures, keys).
