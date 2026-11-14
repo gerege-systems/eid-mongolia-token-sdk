@@ -1,5 +1,8 @@
+using System;
+using System.Collections.Generic;
 using System.Formats.Asn1;
 using System.Globalization;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -107,7 +110,12 @@ public static class Ocsp
             if (rest.HasData)
             {
                 var certs = rest.ReadSequence(Context0).ReadSequence();
-                while (certs.HasData) embedded.Add(new X509Certificate2(certs.ReadEncodedValue().ToArray()));
+                while (certs.HasData)
+                {
+                    // Strict DER, one certificate each — never handed to a loader that also takes PEM / PKCS#7 / PFX.
+                    if (!Der.TryLoadCertificate(certs.ReadEncodedValue().ToArray(), out var responder)) return malformed;
+                    embedded.Add(responder);
+                }
             }
             rest.ThrowIfNotEmpty();
 
@@ -156,20 +164,49 @@ public static class Ocsp
                 return CheckResult.Fail(name, "OCSP хариунд nonce алга (AUTH гэрчилгээнд заавал)");
             }
 
+            // The SingleResponse for this certificate. Entries whose CertID is about another certificate — or cannot be
+            // read as a CertID at all — are skipped; the matching entry must be well-formed, otherwise ✗ (the same
+            // rule on macOS).
             while (responses.HasData)
             {
-                var single = responses.ReadSequence();
-                if (!CertIdMatches(single.ReadSequence(), certificate, issuer)) continue;
+                var entry = responses.ReadEncodedValue();
+                if (!IsEntryFor(entry, certificate, issuer)) continue;
+                var single = new AsnReader(entry, AsnEncodingRules.DER).ReadSequence();
+                single.ReadSequence();                                                   // certID (matched above)
                 var statusTag = single.PeekTag();
                 DateTimeOffset? revokedAt = null;
                 int state;
                 if (Der.IsContext(statusTag, 0)) { single.ReadNull(Context0); state = 0; }
-                else if (Der.IsContext(statusTag, 1)) { revokedAt = Der.ReadTime(single.ReadSequence(Context1)); state = 1; }
+                else if (Der.IsContext(statusTag, 1))
+                {
+                    var info = single.ReadSequence(Context1);                           // RevokedInfo
+                    revokedAt = Der.ReadTime(info);
+                    if (info.HasData)
+                    {
+                        var reason = info.ReadSequence(Context0);                       // revocationReason [0] EXPLICIT
+                        reason.ReadEnumeratedBytes();
+                        reason.ThrowIfNotEmpty();
+                    }
+                    info.ThrowIfNotEmpty();
+                    state = 1;
+                }
                 else if (Der.IsContext(statusTag, 2)) { single.ReadNull(Context2); state = 2; }
                 else return malformed;
                 var thisUpdate = Der.ReadTime(single);
                 DateTimeOffset? nextUpdate = null;
-                if (single.HasData && Der.IsContext(single.PeekTag(), 0)) nextUpdate = Der.ReadTime(single.ReadSequence(Context0));
+                if (single.HasData && Der.IsContext(single.PeekTag(), 0))
+                {
+                    var next = single.ReadSequence(Context0);
+                    nextUpdate = Der.ReadTime(next);
+                    next.ThrowIfNotEmpty();
+                }
+                if (single.HasData && Der.IsContext(single.PeekTag(), 1))
+                {
+                    var wrapper = single.ReadSequence(Context1);                        // singleExtensions
+                    ReadExtensions(wrapper.ReadSequence());
+                    wrapper.ThrowIfNotEmpty();
+                }
+                single.ThrowIfNotEmpty();
                 var window = "thisUpdate " + DisplayDate.Format(thisUpdate)
                              + (nextUpdate is { } n ? ", nextUpdate " + DisplayDate.Format(n) : string.Empty);
 
@@ -194,13 +231,30 @@ public static class Ocsp
         }
     }
 
-    /// CertID with SHA-1 or SHA-256 (the responder may answer in either).
+    /// <paramref name="entry"/> is a SEQUENCE starting with a well-formed CertID for <paramref name="certificate"/>
+    /// issued by <paramref name="issuer"/>. Anything else — another certificate, or no readable CertID — is false (the
+    /// entry is skipped).
+    private static bool IsEntryFor(ReadOnlyMemory<byte> entry, X509Certificate2 certificate, X509Certificate2 issuer)
+    {
+        try
+        {
+            return CertIdMatches(new AsnReader(entry, AsnEncodingRules.DER).ReadSequence().ReadSequence(), certificate, issuer);
+        }
+        catch (Exception ex) when (ex is AsnContentException or CryptographicException)
+        {
+            return false;
+        }
+    }
+
+    /// CertID { AlgorithmIdentifier, OCTET STRING, OCTET STRING, INTEGER } with SHA-1 or SHA-256 (the responder may
+    /// answer in either). Throws on a malformed CertID.
     internal static bool CertIdMatches(AsnReader certId, X509Certificate2 certificate, X509Certificate2 issuer)
     {
         var hashAlgorithm = certId.ReadSequence().ReadObjectIdentifier();
         var nameHash = certId.ReadOctetString();
         var keyHash = certId.ReadOctetString();
         var serial = certId.ReadIntegerBytes();
+        certId.ThrowIfNotEmpty();
         if (hashAlgorithm is not (Der.Sha1 or Der.Sha256)) return false;
         return nameHash.AsSpan().SequenceEqual(Der.Hash(hashAlgorithm, issuer.SubjectName.RawData))
                && keyHash.AsSpan().SequenceEqual(Der.KeyHash(hashAlgorithm, issuer))
@@ -212,7 +266,14 @@ public static class Ocsp
     {
         var extensions = wrapper.ReadSequence();
         wrapper.ThrowIfNotEmpty();
-        byte[]? found = null;
+        return ReadExtensions(extensions).Where(e => e.Oid == oid).Select(e => e.Value).FirstOrDefault();
+    }
+
+    /// `Extensions ::= SEQUENCE OF Extension { extnID, critical BOOLEAN DEFAULT FALSE (DER: 0xFF / 0x00), extnValue }`;
+    /// throws when malformed.
+    private static List<(string Oid, byte[] Value)> ReadExtensions(AsnReader extensions)
+    {
+        var output = new List<(string, byte[])>();
         while (extensions.HasData)
         {
             var ext = extensions.ReadSequence();
@@ -220,8 +281,8 @@ public static class Ocsp
             if (ext.HasData && ext.PeekTag().HasSameClassAndValue(Asn1Tag.Boolean)) ext.ReadBoolean();
             var value = ext.ReadOctetString();
             ext.ThrowIfNotEmpty();
-            if (id == oid) found ??= value;
+            output.Add((id, value));
         }
-        return found;
+        return output;
     }
 }

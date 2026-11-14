@@ -22,9 +22,7 @@ public sealed class CrlTests
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var crl = TestPki.Crl(pki.Issuing, [leaf], Now.AddHours(-1), Now.AddDays(1));
-        var result = Crl.Evaluate(crl, leaf, pki.Issuing, Now);
-        Assert.Equal(CheckState.Fail, result.State);
-        Assert.Contains("цуцлагдсан", result.Reason);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Fail, "Гэрчилгээ CRL-д цуцлагдсан (");
     }
 
     [Fact]
@@ -33,7 +31,7 @@ public sealed class CrlTests
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var crl = TestPki.Crl(pki.Issuing, [], Now.AddDays(-10), Now.AddDays(-1));
-        Assert.Equal(CheckState.Fail, Crl.Evaluate(crl, leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Fail, "CRL хуучирсан");
     }
 
     [Fact]
@@ -43,9 +41,8 @@ public sealed class CrlTests
         using var leaf = pki.CreateLeaf();
         using var impostor = TestPki.CreateCa("TEST ONLY Issuing CA", pki.Intermediate, Now.AddDays(-10), Now.AddYears(1), 0);
         var crl = TestPki.Crl(impostor, [], Now.AddHours(-1), Now.AddDays(1));
-        var result = Crl.Evaluate(crl, leaf, pki.Issuing, Now);
-        Assert.Equal(CheckState.Fail, result.State);
-        Assert.Contains("гарын үсэг", result.Reason);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Fail,
+            "CRL-ийн гарын үсэг олгогчийн түлхүүртэй таарахгүй");
     }
 
     [Fact]
@@ -54,7 +51,7 @@ public sealed class CrlTests
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var crl = TestPki.Crl(pki.Intermediate, [], Now.AddHours(-1), Now.AddDays(1));
-        Assert.Equal(CheckState.Fail, Crl.Evaluate(crl, leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Fail, "CRL-ийг энэ гэрчилгээний олгогч гаргаагүй");
     }
 
     [Fact]
@@ -62,7 +59,7 @@ public sealed class CrlTests
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
-        Assert.Equal(CheckState.Fail, Crl.Evaluate([0x30, 0x01, 0x00], leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate([0x30, 0x01, 0x00], leaf, pki.Issuing, Now), CheckState.Fail, Reason.CrlMalformed);
     }
 
     [Fact]
@@ -71,8 +68,8 @@ public sealed class CrlTests
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         Assert.Equal(CheckState.Pass, Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), Now.AddDays(1)), leaf, pki.Issuing, Now).State);
-        Assert.Equal(CheckState.Fail,
-            Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), Now.AddDays(1), [leaf]), leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), Now.AddDays(1), [leaf]), leaf, pki.Issuing, Now),
+            CheckState.Fail, "Гэрчилгээ CRL-д цуцлагдсан (");
     }
 
     [Fact]
@@ -81,20 +78,32 @@ public sealed class CrlTests
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var crl = TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), null);
-        Assert.Equal(CheckState.Unknown, Crl.Evaluate(crl, leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Unknown, "CRL-д nextUpdate алга");
     }
 
     [Theory]
-    [InlineData("2.5.29.27", true)]            // deltaCRLIndicator
-    [InlineData("2.5.29.28", true)]            // issuingDistributionPoint
-    [InlineData("2.5.29.28", false)]
-    [InlineData("1.3.6.1.4.1.311.99", true)]   // unknown, critical
-    public void DeltaIdpOrUnknownCriticalExtensionCannotBeUsed(string oid, bool critical)
+    [InlineData("2.5.29.27", true, "Delta CRL дэмжигдээгүй")]                                  // deltaCRLIndicator
+    [InlineData("2.5.29.28", true, "issuingDistributionPoint-той CRL дэмжигдээгүй")]          // issuingDistributionPoint
+    [InlineData("2.5.29.28", false, "issuingDistributionPoint-той CRL дэмжигдээгүй")]
+    [InlineData("1.3.6.1.4.1.311.99", true, "CRL-д үл мэдэгдэх critical өргөтгөл байна")]     // unknown, critical
+    public void DeltaIdpOrUnknownCriticalExtensionCannotBeUsed(string oid, bool critical, string reason)
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var crl = TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), Now.AddDays(1), extensionOid: oid, critical: critical);
-        Assert.Equal(CheckState.Unknown, Crl.Evaluate(crl, leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Unknown, reason);
+    }
+
+    /// A critical flag that is not DER (0x01 instead of 0xFF) makes the CRL unreadable (the same on macOS). The CRL is
+    /// re-signed after the edit, so only the encoding is wrong.
+    [Fact]
+    public void NonDerBooleanFails()
+    {
+        using var pki = TestPki.Create();
+        using var leaf = pki.CreateLeaf();
+        var crl = TestPki.RawCrl(pki.Issuing, Now.AddHours(-1), Now.AddDays(1), extensionOid: "2.5.29.20", critical: true,
+            booleanByte: 0x01);
+        Reason.Assert(Crl.Evaluate(crl, leaf, pki.Issuing, Now), CheckState.Fail, Reason.CrlMalformed);
     }
 
     [Fact]
@@ -115,10 +124,10 @@ public sealed class CrlTests
             Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddMinutes(2), Now.AddDays(1)), leaf, pki.Issuing, Now).State);
         Assert.Equal(CheckState.Pass,
             Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-2)), leaf, pki.Issuing, Now).State);
-        Assert.Equal(CheckState.Fail,
-            Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddMinutes(10), Now.AddDays(1)), leaf, pki.Issuing, Now).State);
-        Assert.Equal(CheckState.Fail,
-            Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-10)), leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddMinutes(10), Now.AddDays(1)), leaf, pki.Issuing, Now),
+            CheckState.Fail, "CRL ирээдүйн огноотой");
+        Reason.Assert(Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-10)), leaf, pki.Issuing, Now),
+            CheckState.Fail, "CRL хуучирсан");
     }
 
     [Fact]
@@ -137,7 +146,7 @@ public sealed class CrlTests
         using var leaf = pki.CreateLeaf();
         Assert.Equal(CheckState.Pass,
             Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-5)), leaf, pki.Issuing, Now).State);
-        Assert.Equal(CheckState.Fail,
-            Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-5).AddSeconds(-1)), leaf, pki.Issuing, Now).State);
+        Reason.Assert(Crl.Evaluate(TestPki.RawCrl(pki.Issuing, Now.AddDays(-1), Now.AddMinutes(-5).AddSeconds(-1)), leaf,
+            pki.Issuing, Now), CheckState.Fail, "CRL хуучирсан");
     }
 }

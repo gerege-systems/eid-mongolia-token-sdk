@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Generic;
 using System.Formats.Asn1;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -18,6 +21,83 @@ internal static class Der
     public const string IssuingDistributionPoint = "2.5.29.28";
 
     private static readonly Asn1Tag Context0 = new(TagClass.ContextSpecific, 0);
+    private static readonly Asn1Tag Context3 = new(TagClass.ContextSpecific, 3);
+
+    /// Exactly one DER `Certificate` SEQUENCE spanning all of <paramref name="der"/> — no PEM, no PKCS#7, no PFX, no
+    /// trailing bytes. The same structure rules as `ParsedCertificate(der:)` on macOS: definite minimal lengths, minimal
+    /// INTEGER serial, DER BOOLEAN (0xFF / 0x00), DER times of real dates, unused-bits 0 in the signature and key, and
+    /// nothing in TBSCertificate after subjectPublicKeyInfo but [1], [2], [3] in that order. Never throws.
+    public static bool IsStrictCertificate(ReadOnlyMemory<byte> der)
+    {
+        try
+        {
+            var outer = new AsnReader(der, AsnEncodingRules.DER);
+            var certificate = outer.ReadSequence();
+            outer.ThrowIfNotEmpty();
+            var tbs = certificate.ReadSequence();
+            certificate.ReadSequence().ReadObjectIdentifier();                       // signatureAlgorithm
+            certificate.ReadBitString(out var unused);
+            if (unused != 0) return false;
+            certificate.ThrowIfNotEmpty();
+
+            if (tbs.HasData && IsContext(tbs.PeekTag(), 0)) tbs.ReadSequence(Context0);  // [0] version
+            tbs.ReadIntegerBytes();                                                    // serialNumber (DER: minimal)
+            tbs.ReadSequence();                                                        // signature
+            tbs.ReadSequence();                                                        // issuer
+            var validity = tbs.ReadSequence();
+            ReadTime(validity);
+            ReadTime(validity);
+            validity.ThrowIfNotEmpty();
+            tbs.ReadSequence();                                                        // subject
+            var spki = tbs.ReadSequence();
+            spki.ReadSequence();
+            spki.ReadBitString(out var keyUnused);
+            if (keyUnused != 0) return false;
+            spki.ThrowIfNotEmpty();
+            foreach (var number in new[] { 1, 2 })                                     // issuer/subjectUniqueID
+            {
+                if (tbs.HasData && IsContext(tbs.PeekTag(), number)) tbs.ReadEncodedValue();
+            }
+            if (tbs.HasData && IsContext(tbs.PeekTag(), 3))
+            {
+                var wrapper = tbs.ReadSequence(Context3);
+                var extensions = wrapper.ReadSequence();
+                wrapper.ThrowIfNotEmpty();
+                while (extensions.HasData)
+                {
+                    var extension = extensions.ReadSequence();
+                    extension.ReadObjectIdentifier();
+                    if (extension.HasData && extension.PeekTag().HasSameClassAndValue(Asn1Tag.Boolean))
+                        extension.ReadBoolean();                                       // DER: 0xFF / 0x00 only
+                    extension.ReadOctetString();
+                    extension.ThrowIfNotEmpty();
+                }
+            }
+            tbs.ThrowIfNotEmpty();
+            return true;
+        }
+        catch (Exception ex) when (ex is AsnContentException or CryptographicException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    /// Loads untrusted certificate bytes: only after <see cref="IsStrictCertificate"/> accepted them, and only through
+    /// the plain-certificate loader. False (nothing loaded) for anything else.
+    public static bool TryLoadCertificate(byte[]? der, out X509Certificate2 certificate)
+    {
+        certificate = null!;
+        if (der is null || !IsStrictCertificate(der)) return false;
+        try
+        {
+            certificate = X509CertificateLoader.LoadCertificate(der);
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
 
     /// `SEQUENCE { tbs, AlgorithmIdentifier, BIT STRING }` — Certificate, CertificateList and BasicOCSPResponse all
     /// start like this. Trailing elements (OCSP `certs`) stay in <paramref name="rest"/>.

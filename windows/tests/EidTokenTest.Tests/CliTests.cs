@@ -39,18 +39,27 @@ public sealed class CliArgumentTests
 
     /// Arguments separated by single spaces.
     [Theory]
-    [InlineData("")]
-    [InlineData("--serial S1")]
-    [InlineData("--module")]
-    [InlineData("--module m.dll extra")]
-    [InlineData("--module m.dll --bogus")]
-    [InlineData("--module m.dll --module n.dll")]
-    [InlineData("--module m.dll --origin https://rp.example.mn")]
-    [InlineData("--module m.dll --origin RP.example.mn")]
-    [InlineData("--module m.dll --origin rp.example.mn:443")]
-    [InlineData("--module m.dll --serial")]
-    public void OtherUsageErrors(string line) =>
-        Assert.NotNull(CliArguments.Parse(line.Length == 0 ? [] : line.Split(' ')).UsageError);
+    [InlineData("", "--module <opensc-pkcs11 зам> заавал")]
+    [InlineData("--serial S1", "--module <opensc-pkcs11 зам> заавал")]
+    [InlineData("--module", "--module-ийн утга (модулийн зам) алга")]
+    [InlineData("--module m.dll extra", CliArguments.UnknownArgument)]
+    [InlineData("--module m.dll --bogus", CliArguments.UnknownArgument)]
+    [InlineData("--module m.dll --module n.dll", "--module давхар өгөгдсөн")]
+    [InlineData("--module m.dll --origin https://rp.example.mn", Origin.InvalidReason)]
+    [InlineData("--module m.dll --origin RP.example.mn", Origin.InvalidReason)]
+    [InlineData("--module m.dll --origin rp.example.mn:443", Origin.InvalidReason)]
+    [InlineData("--module m.dll --serial", "--serial-ийн утга алга")]
+    public void OtherUsageErrors(string line, string reason) =>
+        Assert.Equal(reason, CliArguments.Parse(line.Length == 0 ? [] : line.Split(' ')).UsageError);
+
+    /// L5: an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
+    [Fact]
+    public void UnknownArgumentIsNotEchoed()
+    {
+        Assert.Equal(CliArguments.UnknownArgument,
+            CliArguments.Parse(["--module", "m.dll", "--serial", "S1", "--login", "482913"]).UsageError);
+        Assert.DoesNotContain("482913", CliArguments.UnknownArgument, StringComparison.Ordinal);
+    }
 }
 
 public sealed class CliRefusalTests
@@ -76,13 +85,35 @@ public sealed class CliRefusalTests
         return (code, output.ToString(), error.ToString());
     }
 
+    private static string FirstLine(string text) => text.Split(Environment.NewLine)[0];
+
     [Fact]
     public async Task UsageErrorsExit2()
     {
         var source = new FakeTokenSource { Tokens = [Token()] };
-        Assert.Equal(ExitCode.Usage, (await Run(["--module", "m.dll", "--login"], source)).Code);
-        Assert.Equal(ExitCode.Usage, (await Run(["--module", "m.dll", "--serial", "S1", "--login", "--pin", "1"], source)).Code);
+        var noSerial = await Run(["--module", "m.dll", "--login"], source);
+        Assert.Equal(ExitCode.Usage, noSerial.Code);
+        Assert.Equal("eid-token-check: " + CliArguments.SerialRequired, FirstLine(noSerial.Err));
+        var pinArgument = await Run(["--module", "m.dll", "--serial", "S1", "--login", "--pin", "1"], source);
+        Assert.Equal(ExitCode.Usage, pinArgument.Code);
+        Assert.Equal("eid-token-check: " + CliArguments.PinOnCommandLine, FirstLine(pinArgument.Err));
         Assert.Equal(0, source.SignCalls);
+    }
+
+    /// L5: a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PositionalPinIsNeverPrinted(bool json)
+    {
+        var source = new FakeTokenSource { Tokens = [Token()] };
+        var args = new List<string> { "--module", "m.dll", "--serial", "S1", "--login", "482913" };
+        if (json) args.Add("--json");
+        var (code, output, error) = await Run([.. args], source);
+        Assert.Equal(ExitCode.Usage, code);
+        Assert.Equal(0, source.SignCalls);
+        Assert.DoesNotContain("482913", output + error, StringComparison.Ordinal);
+        Assert.Contains(CliArguments.UnknownArgument, output + error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -91,19 +122,23 @@ public sealed class CliRefusalTests
         var source = new FakeTokenSource { Tokens = [Token()] };
         var (code, _, err) = await Run(["--module", "m.dll", "--serial", "S1", "--login"], source, new FakePin(terminal: true));
         Assert.Equal(ExitCode.Usage, code);
-        Assert.Contains("stdin", err, StringComparison.Ordinal);
+        Assert.Equal("eid-token-check: " + CliRunner.StdinIsTerminal, FirstLine(err));
         Assert.Equal(0, source.SignCalls);
     }
 
     [Fact]
     public async Task FinalTryAndLockedAreRefusedWithoutCLogin()
     {
-        foreach (var token in new[] { Token(finalTry: true), Token(locked: true) })
+        foreach (var (token, reason) in new[]
+                 {
+                     (Token(finalTry: true), CliRunner.FinalTryRefused), (Token(locked: true), PinPolicy.Message(PinState.Locked)!),
+                 })
         {
             var source = new FakeTokenSource { Tokens = [token] };
-            var (code, _, _) = await Run(["--module", "m.dll", "--serial", "S1", "--login"], source);
+            var (code, _, err) = await Run(["--module", "m.dll", "--serial", "S1", "--login"], source);
             Assert.Equal(ExitCode.Failed, code);
             Assert.Equal(0, source.SignCalls);
+            Assert.Equal("eid-token-check: " + reason, FirstLine(err));
         }
     }
 
@@ -111,18 +146,24 @@ public sealed class CliRefusalTests
     public async Task EmptyStdinIsAUsageError()
     {
         var source = new FakeTokenSource { Tokens = [Token()] };
-        var (code, _, _) = await Run(["--module", "m.dll", "--serial", "S1", "--login"], source, new FakePin(pin: null));
+        var (code, _, err) = await Run(["--module", "m.dll", "--serial", "S1", "--login"], source, new FakePin(pin: null));
         Assert.Equal(ExitCode.Usage, code);
         Assert.Equal(0, source.SignCalls);
+        Assert.Equal("eid-token-check: " + CliRunner.NoPin, FirstLine(err));
     }
 
     [Fact]
     public async Task ModuleErrorAndMissingTokenExit3()
     {
-        Assert.Equal(ExitCode.NoToken, (await Run(["--module", "missing.dll"], null)).Code);
-        Assert.Equal(ExitCode.NoToken, (await Run(["--module", "m.dll"], new FakeTokenSource())).Code);
-        Assert.Equal(ExitCode.NoToken,
-            (await Run(["--module", "m.dll", "--serial", "S9", "--login"], new FakeTokenSource { Tokens = [Token()] })).Code);
+        var module = await Run(["--module", "missing.dll"], null);
+        Assert.Equal(ExitCode.NoToken, module.Code);
+        Assert.Equal("eid-token-check: PKCS#11 модуль олдсонгүй: missing.dll", FirstLine(module.Err));
+        var none = await Run(["--module", "m.dll"], new FakeTokenSource());
+        Assert.Equal(ExitCode.NoToken, none.Code);
+        Assert.Equal("eid-token-check: " + CliRunner.NoToken, FirstLine(none.Err));
+        var otherSerial = await Run(["--module", "m.dll", "--serial", "S9", "--login"], new FakeTokenSource { Tokens = [Token()] });
+        Assert.Equal(ExitCode.NoToken, otherSerial.Code);
+        Assert.Equal("eid-token-check: " + CliRunner.NoToken + ": S9", FirstLine(otherSerial.Err));
     }
 
     [Fact]
@@ -181,6 +222,7 @@ public sealed class CliRefusalTests
         Assert.False(doc.RootElement.GetProperty("loggedIn").GetBoolean());
         Assert.Equal(CheckNames.All, doc.RootElement.GetProperty("checks").EnumerateArray().Select(c => c.GetProperty("name").GetString()));
         Assert.Equal("unknown", doc.RootElement.GetProperty("checks")[0].GetProperty("status").GetString());
+        Assert.Equal("PIN буруу", doc.RootElement.GetProperty("checks")[0].GetProperty("reason").GetString());
     }
 }
 

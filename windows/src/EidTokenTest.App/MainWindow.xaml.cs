@@ -109,7 +109,7 @@ public sealed partial class MainWindow : Window
         try
         {
             if (reader is null) return;
-            var (objects, pin) = await Task.Run(() => (reader.ReadCertificates(row.SlotId), reader.ReadPinState(row.SlotId)));
+            var (objects, pin) = await Task.Run(() => (reader.ReadCertificates(row.Serial), reader.ReadPinState(row.Serial)));
             if (request != _certRequest) return;
             foreach (var view in objects.Select(CertificateView.Describe)) _certRows.Add(new CertRow(view));
             _hasEidCertificates = TokenLogin.HasEidCertificates(objects);
@@ -165,7 +165,7 @@ public sealed partial class MainWindow : Window
         try
         {
             // Fresh flags before spending a try: locked → no C_Login; final try → explicit confirmation.
-            var state = await Task.Run(() => reader.ReadPinState(row.SlotId));
+            var state = await Task.Run(() => reader.ReadPinState(row.Serial));
             SetPinState(state);
             var gate = PinPolicy.Gate(state);
             if (gate == PinGate.Blocked)
@@ -177,7 +177,7 @@ public sealed partial class MainWindow : Window
 
             // The shared flow (TokenLogin, also used by eid-token-check.exe): AUTH certificate by CKA_ID, one C_Login.
             Show(LoginProgress);
-            var report = await TokenLogin.RunAsync(reader, row.SlotId, origin, pin, _verifier);
+            var report = await TokenLogin.RunAsync(reader, row.Serial, origin, pin, _verifier);
             ShowReport(report);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
@@ -196,7 +196,7 @@ public sealed partial class MainWindow : Window
         // The counter may have changed (wrong PIN): show the new state.
         try
         {
-            SetPinState(await Task.Run(() => reader.ReadPinState(row.SlotId)));
+            SetPinState(await Task.Run(() => reader.ReadPinState(row.Serial)));
             UpdateLoginButton();
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)

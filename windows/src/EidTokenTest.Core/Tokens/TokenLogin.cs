@@ -1,5 +1,8 @@
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using EidTokenTest.Core.Verification;
 
 namespace EidTokenTest.Core.Tokens;
@@ -59,18 +62,17 @@ public sealed record CertificateView(CertificateKind Kind, string KeyIdHex, stri
         ArgumentNullException.ThrowIfNull(obj);
         var kind = EidKeyId.KindOf(obj.Id);
         var idHex = Convert.ToHexString(obj.Id).ToLowerInvariant();
-        try
+        if (!Verification.Der.TryLoadCertificate(obj.Der, out var cert))
         {
-            using var cert = new X509Certificate2(obj.Der);
+            return new CertificateView(kind, idHex, string.IsNullOrEmpty(obj.Label) ? "—" : obj.Label, null, "—", "—",
+                null, null, obj.Id, obj.Der);
+        }
+        using (cert)
+        {
             var serials = Verification.Der.AttributeValues(cert.SubjectName.RawData, Verification.Der.SerialNumberAttribute);
             return new CertificateView(kind, idHex, Verification.Der.DisplayName(cert.SubjectName.RawData),
                 serials.Count > 0 ? serials[0] : null, Verification.Der.DisplayName(cert.IssuerName.RawData), Verification.Der.SerialHex(cert),
                 Verification.Der.NotBefore(cert), Verification.Der.NotAfter(cert), obj.Id, obj.Der);
-        }
-        catch (CryptographicException)
-        {
-            return new CertificateView(kind, idHex, string.IsNullOrEmpty(obj.Label) ? "—" : obj.Label, null, "—", "—",
-                null, null, obj.Id, obj.Der);
         }
     }
 }
@@ -94,9 +96,10 @@ public static class TokenLogin
                ?? certificates.FirstOrDefault(c => c.Id.AsSpan().SequenceEqual(EidKeyId.StagedAuth));
     }
 
-    /// One login attempt on the token in <paramref name="slotId"/>. The PIN state gate is the caller's (the app asks
-    /// before the final try, the command-line tool refuses it). Exactly one C_Login; nothing is retried. Never throws.
-    public static async Task<LoginReport> RunAsync(ITokenSource source, ulong slotId, string origin, string pin,
+    /// One login attempt on the token <paramref name="serial"/> (looked up again by its serial for every step). The PIN
+    /// state gate is the caller's (the app asks before the final try, the command-line tool refuses it). Exactly one
+    /// C_Login; nothing is retried. Never throws.
+    public static async Task<LoginReport> RunAsync(ITokenSource source, string serial, string origin, string pin,
                                                    LoginVerifier verifier, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(source);
@@ -105,7 +108,7 @@ public static class TokenLogin
         IReadOnlyList<TokenCertificateObject> certificates;
         try
         {
-            certificates = await Task.Run(() => source.ReadCertificates(slotId), ct).ConfigureAwait(false);
+            certificates = await Task.Run(() => source.ReadCertificates(serial), ct).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -114,6 +117,6 @@ public static class TokenLogin
         if (!HasEidCertificates(certificates)) return LoginReport.NotStarted(NoEidCertificates);
         if (AuthCertificate(certificates) is not { } auth) return LoginReport.NotStarted(NoAuthCertificate);
         return await verifier.RunAsync(origin, LoginChallenge.NewChallenge(), auth.Der,
-            (digest, token) => Task.Run(() => source.SignDigest(slotId, auth.Id, digest, pin), token), ct).ConfigureAwait(false);
+            (digest, token) => Task.Run(() => source.SignDigest(serial, auth.Id, digest, pin), token), ct).ConfigureAwait(false);
     }
 }

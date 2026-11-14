@@ -29,29 +29,45 @@ public struct ParsedCertificate: Sendable, Equatable {
     public let subjectPublicKey: [UInt8]
     public let extensions: [Extension]
 
+    /// Exactly one DER `Certificate` SEQUENCE spanning all of `der` — no PEM, no PKCS#7, no PFX, no trailing bytes;
+    /// otherwise nil. The same structure rules as `Der.IsStrictCertificate` on Windows: definite minimal lengths,
+    /// minimal INTEGER serial, DER BOOLEAN (0xFF / 0x00), DER times of real dates, unused-bits 0 in the signature and
+    /// key, and nothing in TBSCertificate after subjectPublicKeyInfo but [1], [2], [3] in that order.
     public init?(der: [UInt8]) {
         guard let cert = DER.single(der), cert.tag == DER.Tag.sequence,
               let top = cert.children, top.count == 3, top[0].tag == DER.Tag.sequence,
               let algorithm = DER.algorithmOID(top[1]), let signature = DER.bitStringBytes(top[2]),
               var parts = top[0].children else { return nil }
         if parts.first?.tag == DER.Tag.context(0) { parts.removeFirst() }          // [0] version
-        guard parts.count >= 6, parts[0].tag == DER.Tag.integer, parts[2].tag == DER.Tag.sequence,
+        guard parts.count >= 6, parts[0].tag == DER.Tag.integer, DER.isMinimalInteger(parts[0].value),
+              parts[1].tag == DER.Tag.sequence, parts[2].tag == DER.Tag.sequence,
               parts[3].tag == DER.Tag.sequence, let validity = parts[3].children, validity.count == 2,
               let notBefore = DER.time(validity[0]), let notAfter = DER.time(validity[1]),
               parts[4].tag == DER.Tag.sequence, parts[5].tag == DER.Tag.sequence,
-              let spki = parts[5].children, spki.count == 2,
+              let spki = parts[5].children, spki.count == 2, spki[0].tag == DER.Tag.sequence,
               let key = DER.bitStringBytes(spki[1]) else { return nil }
+        // issuerUniqueID [1], subjectUniqueID [2], extensions [3] — each optional, in this order, nothing else.
+        var optional = Array(parts.dropFirst(6))
+        for number: UInt8 in [1, 2] where optional.first.map({ $0.tag & 0x1F == number && $0.tag & 0xC0 == 0x80 }) == true {
+            optional.removeFirst()
+        }
         var extensions: [Extension] = []
-        if let block = parts.dropFirst(6).first(where: { $0.tag == DER.Tag.context(3) }) {
+        if let block = optional.first, block.tag == DER.Tag.context(3) {
+            optional.removeFirst()
             guard let inner = block.children, inner.count == 1, inner[0].tag == DER.Tag.sequence,
                   let list = inner[0].children else { return nil }
             for item in list {
-                guard let f = item.children, (2...3).contains(f.count), f[0].tag == DER.Tag.oid,
-                      let value = f.last, value.tag == DER.Tag.octetString else { return nil }
-                let critical = f.count == 3 && f[1].tag == DER.Tag.boolean && f[1].value.first.map { $0 != 0 } == true
+                guard item.tag == DER.Tag.sequence, let f = item.children, (2...3).contains(f.count),
+                      f[0].tag == DER.Tag.oid, let value = f.last, value.tag == DER.Tag.octetString else { return nil }
+                var critical = false
+                if f.count == 3 {
+                    guard let flag = DER.boolean(f[1]) else { return nil }
+                    critical = flag
+                }
                 extensions.append(Extension(oid: f[0].value, critical: critical, value: value.value))
             }
         }
+        guard optional.isEmpty else { return nil }
         self.der = der
         self.tbs = top[0].raw
         self.signatureAlgorithm = algorithm
@@ -257,8 +273,9 @@ public enum SignatureVerifier {
         return SecKeyVerifySignature(key, algorithm, Data(message) as CFData, Data(signature) as CFData, nil)
     }
 
-    /// ECDSA P-256 over a 32-byte digest: raw r‖s (64 bytes) with the uncompressed point `04‖X‖Y`.
-    public static func verifyP256(point: [UInt8], digest: [UInt8], rawSignature: [UInt8]) -> Bool {
+    /// ECDSA P-256 over a 32-byte digest: raw r‖s (64 bytes) with the uncompressed point `04‖X‖Y`. Internal: the
+    /// login digest is always computed by `LoginChallenge` from (origin, challenge) — never taken from a caller.
+    static func verifyP256(point: [UInt8], digest: [UInt8], rawSignature: [UInt8]) -> Bool {
         guard point.count == 65, point.first == 0x04, digest.count == 32, rawSignature.count == 64,
               let der = try? P256.Signing.ECDSASignature(rawRepresentation: rawSignature).derRepresentation else {
             return false

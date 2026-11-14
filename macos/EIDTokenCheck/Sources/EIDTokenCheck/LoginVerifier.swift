@@ -93,25 +93,43 @@ public struct LoginVerifier: Sendable {
         self.fetcher = fetcher
     }
 
-    /// The relying party's decision from what the client sent back. `origin` is the relying party's own host name,
-    /// `challenge` the 32 bytes it issued; the signed digest is computed here.
+    /// The relying party's decision from what the client sent back. `origin` is the relying party's own host name —
+    /// a constant from its configuration, never taken from the request — and `challenge` the 32 bytes it issued; the
+    /// signed digest is computed here.
     public func verify(origin: String, challenge: [UInt8], signature: [UInt8], certificate: [UInt8],
                        now: Date = Date()) async -> LoginReport {
-        guard Origin.isValid(origin) else { return .notStarted(Origin.invalidReason) }
-        guard let leaf = ParsedCertificate(der: certificate) else { return .notStarted("AUTH гэрчилгээг уншиж чадсангүй") }
+        if let rejected = Self.rejectInput(origin: origin, challenge: challenge, certificate: certificate) {
+            return rejected
+        }
+        guard let leaf = ParsedCertificate(der: certificate) else { return .inputRejected(Self.unreadableCertificate) }
         let signatureCheck = LoginChallenge.checkSignature(origin: origin, challenge: challenge, rawSignature: signature,
                                                            certificate: leaf)
         return await checkAll(leaf: leaf, signature: signatureCheck, now: now)
     }
 
+    static let unreadableCertificate = "AUTH гэрчилгээг уншиж чадсангүй (нэг DER гэрчилгээ биш)"
+
+    /// Invalid origin → wrong-length challenge → certificate that is not one strict DER certificate: the report
+    /// `LoginReport.inputRejected` (signature ✗, the rest «шалгаж чадсангүй», no network, nothing signed); nil = go on.
+    static func rejectInput(origin: String, challenge: [UInt8], certificate: [UInt8]) -> LoginReport? {
+        guard Origin.isValid(origin) else { return .inputRejected(Origin.invalidReason) }
+        guard challenge.count == LoginChallenge.length else {
+            return .inputRejected(LoginChallenge.lengthReason(challenge.count))
+        }
+        guard ParsedCertificate(der: certificate) != nil else { return .inputRejected(unreadableCertificate) }
+        return nil
+    }
+
     /// The test apps' whole login: origin, challenge (exactly 32 bytes), certificate and key type are checked BEFORE
-    /// anything is signed; then `sign` is called ONCE with the digest (C_Login + C_Sign on the token). An error from
-    /// `sign` makes the signature row «шалгаж чадсангүй» with the error's text; the other checks still run.
+    /// anything is signed (the same rejection as `verify`); then `sign` is called ONCE with the digest (C_Login +
+    /// C_Sign on the token). An error from `sign` makes the signature row «шалгаж чадсангүй» with the error's text;
+    /// the other checks still run.
     public func run(origin: String, challenge: [UInt8], certificate: [UInt8], now: Date = Date(),
                     sign: ([UInt8]) async throws -> [UInt8]) async -> LoginReport {
-        guard Origin.isValid(origin) else { return .notStarted(Origin.invalidReason) }
-        guard challenge.count == LoginChallenge.length else { return .notStarted(LoginChallenge.lengthReason(challenge.count)) }
-        guard let leaf = ParsedCertificate(der: certificate) else { return .notStarted("AUTH гэрчилгээг уншиж чадсангүй") }
+        if let rejected = Self.rejectInput(origin: origin, challenge: challenge, certificate: certificate) {
+            return rejected
+        }
+        guard let leaf = ParsedCertificate(der: certificate) else { return .inputRejected(Self.unreadableCertificate) }
         let signatureCheck: CheckResult
         if !leaf.isP256Key {
             signatureCheck = CheckResult(.signature, .failed, "AUTH гэрчилгээний түлхүүр EC P-256 биш")
@@ -124,7 +142,7 @@ public struct LoginVerifier: Sendable {
                 signatureCheck = CheckResult(.signature, .unavailable, error.localizedDescription)
             }
         } else {
-            return .notStarted(Origin.invalidReason)
+            return .inputRejected(Origin.invalidReason)
         }
         return await checkAll(leaf: leaf, signature: signatureCheck, now: now)
     }
@@ -137,7 +155,9 @@ public struct LoginVerifier: Sendable {
         let issuer = trust.issuingCA(of: leaf)
         checks.append(await ocsp(leaf: leaf, issuer: issuer, nonceRequired: true, now: now))
         checks.append(await crl(leaf: leaf, issuer: issuer, now: now))
-        return LoginReport(checks: checks, subjectName: leaf.subjectName?.displayName ?? "—")
+        let serials = leaf.subjectName?.values(OID.serialNumber) ?? []
+        return LoginReport(checks: checks, subjectName: leaf.subjectName?.displayName ?? "—",
+                           subjectSerialNumber: serials.count == 1 ? serials[0] : nil)
     }
 
     /// «Гэрчилгээний гинж» also covers the issuing CA (chain element [1]) not being revoked: the same OCSP and CRL

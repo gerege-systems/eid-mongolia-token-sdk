@@ -53,6 +53,8 @@ public enum CLIArguments {
 
     public static let pinOnCommandLine = "PIN-ийг командын мөрөөр өгөхгүй — stdin-ээр (pipe эсвэл файл) дамжуулна"
     public static let serialRequired = "--login-д --serial заавал (PIN оруулах токеныг тодорхой заана)"
+    /// Never echoes the argument itself: it may be a PIN typed in the wrong place.
+    public static let unknownArgument = "Үл мэдэгдэх аргумент (утгыг нь хэвлэхгүй) — --help-ийг үзнэ үү"
 
     public static func parse(_ arguments: [String]) -> ParseResult {
         var modulePath: String?
@@ -91,7 +93,7 @@ public enum CLIArguments {
                 guard !json else { return .usage("--json давхар өгөгдсөн") }
                 json = true
             default:
-                return .usage("Үл мэдэгдэх аргумент: \(arg)")
+                return .usage(unknownArgument)
             }
             i += 1
         }

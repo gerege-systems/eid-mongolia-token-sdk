@@ -1,4 +1,7 @@
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 
 namespace EidTokenTest.Core.Verification;
 
@@ -48,9 +51,21 @@ public static class CheckNames
 }
 
 /// The whole login test: logged in only when every check passed.
-/// <param name="StopReason">Set when the test stopped before the checks could run.</param>
+/// <param name="SubjectName">The certificate holder's name (CN, else «given surname») — display only; never identify a
+/// user by it.</param>
+/// <param name="StopReason">Set when the test stopped before the checks could run (token refused, no eID certificate, …).</param>
 public sealed record LoginReport(IReadOnlyList<CheckResult> Checks, string SubjectName, string? StopReason = null)
 {
+    /// The reason on the rows that were not run because the input was rejected.
+    public const string NotRunReason = "Шалгаагүй — оролт буруу";
+
+    /// The AUTH certificate's subject serialNumber as read (see <see cref="SubjectSerialNumber"/>).
+    internal string? HolderSerialNumber { get; init; }
+
+    /// The verified user: the AUTH certificate's subject serialNumber (`PNOMN-…`, README §6.6) — ONLY when
+    /// <see cref="LoggedIn"/>, otherwise null. Identify the user by this, never by the name.
+    public string? SubjectSerialNumber => LoggedIn ? HolderSerialNumber : null;
+
     public bool LoggedIn => StopReason is null && Checks.Select(c => c.Name).SequenceEqual(CheckNames.All)
                             && Checks.All(c => c.State == CheckState.Pass);
 
@@ -70,6 +85,14 @@ public sealed record LoginReport(IReadOnlyList<CheckResult> Checks, string Subje
     /// Every row «шалгаж чадсангүй» with <paramref name="reason"/>; not logged in.
     public static LoginReport NotStarted(string reason) =>
         new(CheckNames.All.Select(n => CheckResult.Unknown(n, reason)).ToList(), string.Empty, reason);
+
+    /// Invalid origin, a challenge that is not exactly 32 bytes, or an AUTH certificate that is not one strict DER
+    /// certificate: «Challenge-ийн гарын үсэг» ✗ with <paramref name="reason"/>, every other row «шалгаж чадсангүй» —
+    /// decided before anything is signed and WITHOUT any network request. The same on macOS.
+    public static LoginReport InputRejected(string reason) =>
+        new(CheckNames.All.Select(n => n == CheckNames.Signature
+            ? CheckResult.Fail(n, reason)
+            : CheckResult.Unknown(n, NotRunReason)).ToList(), string.Empty);
 }
 
 /// Freshness of a revocation answer (OCSP SingleResponse or CRL), the same on Windows and macOS: thisUpdate not in the

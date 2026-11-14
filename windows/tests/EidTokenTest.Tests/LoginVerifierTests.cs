@@ -1,9 +1,35 @@
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using EidTokenTest.Core.Tokens;
 using EidTokenTest.Core.Verification;
 
 namespace EidTokenTest.Tests;
+
+/// Reason texts shared by the negative tests (the same texts on macOS).
+internal static class Reason
+{
+    public const string NotTrusted = "Итгэмжлэгдсэн үндэс хүртэл гинж баталгаажсангүй";
+    public const string Not04 = "Гэрчилгээг eID Mongolia Issuing CA (04) шууд олгоогүй";
+    public const string KeyUsageMissing = "AUTH профайл: KeyUsage өргөтгөл алга";
+    public const string KeyUsageOnly = "AUTH профайл: KeyUsage нь зөвхөн digitalSignature байх ёстой";
+    public const string EkuMissing = "AUTH профайл: ExtendedKeyUsage өргөтгөл алга";
+    public const string NoClientAuth = "AUTH профайл: ExtendedKeyUsage-д clientAuth алга";
+    public const string SerialNumber = "AUTH профайл: subject serialNumber нь PNOMN- угтвартай ганц утга байх ёстой";
+    public const string WrongKey = "Гарын үсэг AUTH гэрчилгээний түлхүүртэй таарахгүй";
+    public const string Unreadable = "AUTH гэрчилгээг уншиж чадсангүй";
+    public const string NoIssuingCa = "Олгогч CA (04) апп-д алга";
+    public const string OcspMalformed = "OCSP хариу задрахгүй байна";
+    public const string CrlMalformed = "CRL задрахгүй байна";
+    public const string CertIdMismatch = "OCSP хариунд энэ гэрчилгээний төлөв алга (CertID таарахгүй)";
+
+    /// A negative result: its state AND its reason (prefix — dates and names follow some reasons).
+    public static void Assert(CheckResult result, CheckState state, string reasonPrefix)
+    {
+        Xunit.Assert.Equal(state, result.State);
+        Xunit.Assert.StartsWith(reasonPrefix, result.Reason, StringComparison.Ordinal);
+    }
+}
 
 public sealed class LoginVerifierTests
 {
@@ -31,6 +57,16 @@ public sealed class LoginVerifierTests
 
     private static CheckResult Row(LoginReport report, string name) => report.Checks.Single(c => c.Name == name);
 
+    /// The rejected-input report: signature ✗ with <paramref name="reason"/>, every other row «шалгаж чадсангүй».
+    private static void AssertRejected(LoginReport report, string reason)
+    {
+        Assert.Equal(CheckNames.All, report.Checks.Select(c => c.Name));
+        Reason.Assert(report.Checks[0], CheckState.Fail, reason);
+        foreach (var check in report.Checks.Skip(1)) Reason.Assert(check, CheckState.Unknown, LoginReport.NotRunReason);
+        Assert.False(report.LoggedIn);
+        Assert.Null(report.SubjectSerialNumber);
+    }
+
     [Fact]
     public async Task AllChecksPassLogsIn()
     {
@@ -43,6 +79,8 @@ public sealed class LoginVerifierTests
         Assert.Equal(CheckNames.All, report.Checks.Select(c => c.Name));
         Assert.True(report.LoggedIn);
         Assert.Equal("Нэвтэрлээ: TEST ONLY Citizen", report.Summary);
+        Assert.Equal("TEST ONLY Citizen", report.SubjectName);
+        Assert.Equal(TestPki.SubjectSerial, report.SubjectSerialNumber);
         Assert.Contains("олгогч CA цуцлагдаагүй", Row(report, CheckNames.Chain).Reason, StringComparison.Ordinal);
         Assert.Equal(new[] { TestPki.CaOcspUrl, TestPki.CaCrlUrl, TestPki.OcspUrl, TestPki.CrlUrl },
                      transport.Requested.Select(u => u.AbsoluteUri));
@@ -56,6 +94,7 @@ public sealed class LoginVerifierTests
         var report = await new LoginVerifier(pki.Trust, Online(pki, leaf), () => Now)
             .VerifyAsync(TestPki.Origin, Challenge, TestPki.Sign(leaf, TestPki.Origin, Challenge), leaf.RawData);
         Assert.True(report.LoggedIn, report.Summary);
+        Assert.Equal(TestPki.SubjectSerial, report.SubjectSerialNumber);
     }
 
     [Fact]
@@ -69,30 +108,32 @@ public sealed class LoginVerifierTests
         Assert.Equal(32, LoginChallenge.NewChallenge().Length);
     }
 
-    /// The signature is otherwise valid (over the bound digest of that very challenge): only the length fails it.
+    /// The signature is otherwise valid (over the bound digest of that very challenge): only the length fails it —
+    /// before anything is signed, and (L8) without any network request.
     [Theory]
     [InlineData(0)]
     [InlineData(31)]
     [InlineData(33)]
     [InlineData(64)]
-    public async Task ChallengeNotExactly32BytesIsRejectedBeforeSigning(int length)
+    public async Task ChallengeNotExactly32BytesIsRejectedWithoutSigningOrNetwork(int length)
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
         var challenge = Enumerable.Repeat((byte)9, length).ToArray();
+        var expected = "Challenge " + length + " байт (яг 32 байт байх ёстой)";
         var signed = false;
-        var report = await new LoginVerifier(pki.Trust, Online(pki, leaf), () => Now).RunAsync(TestPki.Origin, challenge,
+        var transport = Online(pki, leaf);
+        var run = await new LoginVerifier(pki.Trust, transport, () => Now).RunAsync(TestPki.Origin, challenge,
             leaf.RawData, (_, _) => { signed = true; return Task.FromResult(new byte[64]); });
         Assert.False(signed);
-        Assert.False(report.LoggedIn);
+        AssertRejected(run, expected);
         Assert.Throws<ArgumentException>(() => LoginChallenge.DigestToSign(TestPki.Origin, challenge));
 
         var validSignature = TestPki.Sign(leaf, TestPki.Origin, challenge);
-        var verified = await new LoginVerifier(pki.Trust, Online(pki, leaf), () => Now)
+        var verified = await new LoginVerifier(pki.Trust, transport, () => Now)
             .VerifyAsync(TestPki.Origin, challenge, validSignature, leaf.RawData);
-        Assert.Equal(CheckState.Fail, Row(verified, CheckNames.Signature).State);
-        Assert.StartsWith("Challenge " + length, Row(verified, CheckNames.Signature).Reason, StringComparison.Ordinal);
-        Assert.False(verified.LoggedIn);
+        AssertRejected(verified, expected);
+        Assert.Empty(transport.Requested);
     }
 
     [Theory]
@@ -102,7 +143,7 @@ public sealed class LoginVerifierTests
     [InlineData("rp.test.invalid:443")]
     [InlineData("rp.test.invalid/login")]
     [InlineData("rp.test.invalid.")]
-    public async Task InvalidOriginStopsBeforeSigningAndVerifying(string origin)
+    public async Task InvalidOriginIsRejectedWithoutSigningOrNetwork(string origin)
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
@@ -111,11 +152,38 @@ public sealed class LoginVerifierTests
         var run = await new LoginVerifier(pki.Trust, transport, () => Now).RunAsync(origin, Challenge, leaf.RawData,
             (_, _) => { signed = true; return Task.FromResult(new byte[64]); });
         Assert.False(signed);
-        Assert.Equal(Origin.InvalidReason, run.StopReason);
+        AssertRejected(run, Origin.InvalidReason);
         var verify = await new LoginVerifier(pki.Trust, transport, () => Now)
             .VerifyAsync(origin, Challenge, TestPki.Sign(leaf, origin, Challenge), leaf.RawData);
-        Assert.False(verify.LoggedIn);
+        AssertRejected(verify, Origin.InvalidReason);
         Assert.Empty(transport.Requested);
+    }
+
+    /// M3 / L3: anything but one strict DER certificate — PEM, PKCS#7, PFX, trailing bytes, empty, null, a non-DER
+    /// BOOLEAN, an impossible date — is signature ✗ with no network request; nothing throws.
+    [Fact]
+    public async Task NonCertificateInputIsRejectedWithoutNetworkAndNeverThrows()
+    {
+        using var pki = TestPki.Create();
+        using var leaf = pki.CreateLeaf();
+        var transport = Online(pki, leaf);
+        var verifier = new LoginVerifier(pki.Trust, transport, () => Now);
+        var signature = TestPki.Sign(leaf, TestPki.Origin, Challenge);
+        foreach (var (name, bytes) in DerTests.NonCertificates(pki, leaf))
+        {
+            Assert.False(Der.IsStrictCertificate(bytes ?? Array.Empty<byte>()), name);
+            AssertRejected(await verifier.VerifyAsync(TestPki.Origin, Challenge, signature, bytes!), Reason.Unreadable);
+            var signed = false;
+            AssertRejected(await verifier.RunAsync(TestPki.Origin, Challenge, bytes!,
+                (_, _) => { signed = true; return Task.FromResult(signature); }), Reason.Unreadable);
+            Assert.False(signed, name);
+        }
+        Assert.Empty(transport.Requested);
+        // Null challenge / signature / signer: rows, not exceptions.
+        AssertRejected(await verifier.VerifyAsync(TestPki.Origin, null!, signature, leaf.RawData), "Challenge 0 байт");
+        Reason.Assert((await verifier.VerifyAsync(TestPki.Origin, Challenge, null!, leaf.RawData)).Checks[0], CheckState.Fail,
+            "Гарын үсгийн урт 0 байт");
+        Assert.Equal(CheckState.Unknown, (await verifier.RunAsync(TestPki.Origin, Challenge, leaf.RawData, null!)).Checks[0].State);
     }
 
     [Fact]
@@ -125,8 +193,9 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf();
         var report = await new LoginVerifier(pki.Trust, Online(pki, leaf), () => Now)
             .VerifyAsync(TestPki.Origin, Challenge, TestPki.SignBare(leaf, Challenge), leaf.RawData);
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Signature).State);
+        Reason.Assert(Row(report, CheckNames.Signature), CheckState.Fail, Reason.WrongKey);
         Assert.False(report.LoggedIn);
+        Assert.Null(report.SubjectSerialNumber);
     }
 
     [Fact]
@@ -137,7 +206,7 @@ public sealed class LoginVerifierTests
         var verifier = new LoginVerifier(pki.Trust, Online(pki, leaf), () => Now);
         var otherOrigin = await verifier.VerifyAsync(TestPki.Origin, Challenge,
             TestPki.Sign(leaf, "other.test.invalid", Challenge), leaf.RawData);
-        Assert.Equal(CheckState.Fail, Row(otherOrigin, CheckNames.Signature).State);
+        Reason.Assert(Row(otherOrigin, CheckNames.Signature), CheckState.Fail, Reason.WrongKey);
         Assert.False(otherOrigin.LoggedIn);
     }
 
@@ -149,22 +218,25 @@ public sealed class LoginVerifierTests
         var good = TestPki.Sign(leaf, TestPki.Origin, Challenge);
         Assert.Equal(CheckState.Pass, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, good).State);
 
+        const string scalar = "Гарын үсгийн r эсвэл s хүчингүй (0 эсвэл ≥ n)";
         var zeroR = (byte[])good.Clone();
         Array.Clear(zeroR, 0, 32);
         var zeroS = (byte[])good.Clone();
         Array.Clear(zeroS, 32, 32);
         byte[] rIsN = [.. LoginVerifier.P256Order, .. good.AsSpan(32).ToArray()];
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, zeroR).State);
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, zeroS).State);
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, rIsN).State);
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, zeroR), CheckState.Fail, scalar);
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, zeroS), CheckState.Fail, scalar);
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, rIsN), CheckState.Fail, scalar);
 
         using var key = leaf.GetECDsaPrivateKey()!;
         var der = key.SignHash(LoginChallenge.DigestToSign(TestPki.Origin, Challenge), DSASignatureFormat.Rfc3279DerSequence);
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, der).State);
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, good[..63]).State);
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, der), CheckState.Fail,
+            "Гарын үсгийн урт " + der.Length + " байт");
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, good[..63]), CheckState.Fail,
+            "Гарын үсгийн урт 63 байт");
         var tampered = (byte[])good.Clone();
         tampered[10] ^= 0x01;
-        Assert.Equal(CheckState.Fail, LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, tampered).State);
+        Reason.Assert(LoginVerifier.SignatureCheck(leaf, TestPki.Origin, Challenge, tampered), CheckState.Fail, Reason.WrongKey);
 
         Assert.False(LoginVerifier.IsValidScalar(new byte[32]));
         Assert.False(LoginVerifier.IsValidScalar(LoginVerifier.P256Order));
@@ -178,9 +250,10 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf();
         var report = await Run(pki, new FakeTransport { Offline = true }, leaf);
 
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Ocsp).State);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Crl).State);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Chain).State);      // issuing CA revocation unreachable
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Unknown, "OCSP руу холбогдож чадсангүй (ocsp.test.invalid)");
+        Reason.Assert(Row(report, CheckNames.Crl), CheckState.Unknown, "CRL татаж чадсангүй (crl.test.invalid)");
+        Reason.Assert(Row(report, CheckNames.Chain), CheckState.Unknown,       // issuing CA revocation unreachable
+            "Олгогч CA (TEST ONLY Issuing CA) — OCSP: OCSP руу холбогдож чадсангүй");
         Assert.Equal("шалгаж чадсангүй", Row(report, CheckNames.Ocsp).Mark);
         Assert.False(report.LoggedIn);
         Assert.StartsWith("Нэвтэрч чадсангүй: ", report.Summary, StringComparison.Ordinal);
@@ -208,8 +281,8 @@ public sealed class LoginVerifierTests
             _ => new InvalidOperationException("unexpected"),
         };
         var report = await Run(pki, transport, leaf);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Ocsp).State);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Crl).State);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Unknown, "OCSP руу холбогдож чадсангүй (ocsp.test.invalid)");
+        Reason.Assert(Row(report, CheckNames.Crl), CheckState.Unknown, "CRL татаж чадсангүй (crl.test.invalid)");
         Assert.False(report.LoggedIn);
     }
 
@@ -222,9 +295,9 @@ public sealed class LoginVerifierTests
         transport.Ocsp[TestPki.OcspUrl] = _ => TestPki.OcspResponse(leaf, pki.Issuing, pki.Issuing, 0,
             Now.AddMinutes(-1), Now.AddHours(1));
         var report = await Run(pki, transport, leaf);
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Ocsp).State);
-        Assert.Contains("nonce", Row(report, CheckNames.Ocsp).Reason, StringComparison.Ordinal);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Fail, "OCSP хариунд nonce алга (AUTH гэрчилгээнд заавал)");
         Assert.False(report.LoggedIn);
+        Assert.Null(report.SubjectSerialNumber);
     }
 
     [Fact]
@@ -234,8 +307,8 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf();
         var report = await Run(pki, Online(pki, leaf, status: 1, revoked: [leaf]), leaf);
 
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Ocsp).State);
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Crl).State);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Fail, "Гэрчилгээ цуцлагдсан (");
+        Reason.Assert(Row(report, CheckNames.Crl), CheckState.Fail, "Гэрчилгээ CRL-д цуцлагдсан (");
         Assert.False(report.LoggedIn);
     }
 
@@ -249,19 +322,22 @@ public sealed class LoginVerifierTests
         byOcsp.Ocsp[TestPki.CaOcspUrl] = _ => TestPki.OcspResponse(pki.Issuing, pki.Intermediate, pki.Intermediate, 1,
             Now.AddMinutes(-1), Now.AddHours(1));
         var ocspReport = await Run(pki, byOcsp, leaf);
-        Assert.Equal(CheckState.Fail, Row(ocspReport, CheckNames.Chain).State);
+        Reason.Assert(Row(ocspReport, CheckNames.Chain), CheckState.Fail,
+            "Олгогч CA (TEST ONLY Issuing CA) — OCSP: Гэрчилгээ цуцлагдсан");
         Assert.False(ocspReport.LoggedIn);
 
         var byCrl = Online(pki, leaf);
         byCrl.Crls[TestPki.CaCrlUrl] = TestPki.Crl(pki.Intermediate, [pki.Issuing], Now.AddHours(-1), Now.AddDays(1));
         var crlReport = await Run(pki, byCrl, leaf);
-        Assert.Equal(CheckState.Fail, Row(crlReport, CheckNames.Chain).State);
+        Reason.Assert(Row(crlReport, CheckNames.Chain), CheckState.Fail,
+            "Олгогч CA (TEST ONLY Issuing CA) — CRL: Гэрчилгээ CRL-д цуцлагдсан");
         Assert.False(crlReport.LoggedIn);
 
         var unreachable = Online(pki, leaf);
         unreachable.Crls.Remove(TestPki.CaCrlUrl);
         var offline = await Run(pki, unreachable, leaf);
-        Assert.Equal(CheckState.Unknown, Row(offline, CheckNames.Chain).State);
+        Reason.Assert(Row(offline, CheckNames.Chain), CheckState.Unknown,
+            "Олгогч CA (TEST ONLY Issuing CA) — CRL: CRL татаж чадсангүй");
         Assert.False(offline.LoggedIn);
     }
 
@@ -273,7 +349,8 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf();
         var transport = Online(pki, leaf);
         var report = await Run(pki, transport, leaf);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Chain).State);
+        Reason.Assert(Row(report, CheckNames.Chain), CheckState.Unknown,
+            "Олгогч CA (TEST ONLY Issuing CA)-ийн гэрчилгээнд AIA ч CDP ч алга");
         Assert.False(report.LoggedIn);
         Assert.Equal(new[] { TestPki.OcspUrl, TestPki.CrlUrl }, transport.Requested.Select(u => u.AbsoluteUri));
     }
@@ -297,7 +374,7 @@ public sealed class LoginVerifierTests
         using var other = pki.CreateLeaf();
         var report = await Run(pki, Online(pki, leaf), leaf, signer: other);
 
-        Assert.Equal(CheckState.Fail, report.Checks[0].State);
+        Reason.Assert(report.Checks[0], CheckState.Fail, Reason.WrongKey);
         Assert.False(report.LoggedIn);
     }
 
@@ -322,8 +399,8 @@ public sealed class LoginVerifierTests
         var transport = Online(pki, leaf);
         var report = await Run(pki, transport, leaf);
 
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Ocsp).State);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Crl).State);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Unknown, "Гэрчилгээнд OCSP хаяг (AIA) алга");
+        Reason.Assert(Row(report, CheckNames.Crl), CheckState.Unknown, "Гэрчилгээнд CRL хаяг (CDP) алга");
         Assert.DoesNotContain(transport.Requested, u => u.AbsoluteUri is TestPki.OcspUrl or TestPki.CrlUrl);
         Assert.False(report.LoggedIn);
     }
@@ -336,9 +413,9 @@ public sealed class LoginVerifierTests
         using var leaf = other.CreateLeaf();
         var report = await Run(pki, Online(other, leaf), leaf);
 
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Chain).State);
+        Reason.Assert(Row(report, CheckNames.Chain), CheckState.Fail, Reason.NotTrusted);
         // Not issued by the pinned issuing CA: OCSP / CRL cannot be judged against it.
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Ocsp).State);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Unknown, Reason.NoIssuingCa);
         Assert.False(report.LoggedIn);
     }
 
@@ -353,7 +430,25 @@ public sealed class LoginVerifierTests
         var ok = verifier.Chain(leaf, Now, cas);
         Assert.Equal(CheckState.Pass, ok.State);
         Assert.Contains("TEST ONLY Root CA", ok.Reason, StringComparison.Ordinal);
-        Assert.Equal(4, cas.Count);
+        Assert.Equal(new[] { pki.Issuing.RawData, pki.Intermediate.RawData, pki.National.RawData, pki.Root.RawData },
+                     cas.Select(c => c.RawData));
+    }
+
+    [Fact]
+    public void ForeignRootOrMissingIntermediateFails()
+    {
+        using var pki = TestPki.Create();
+        using var other = TestPki.Create("OTHER");
+        using var leaf = pki.CreateLeaf();
+        var foreignRoot = new TrustAnchors([TestPki.PublicOnly(other.Root)],
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(pki.Issuing)],
+            TestPki.PublicOnly(pki.Issuing));
+        Reason.Assert(new LoginVerifier(foreignRoot, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail,
+            Reason.NotTrusted);
+        var missing = new TrustAnchors([TestPki.PublicOnly(pki.Root)], [TestPki.PublicOnly(pki.Issuing)],
+            TestPki.PublicOnly(pki.Issuing));
+        Reason.Assert(new LoginVerifier(missing, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail,
+            Reason.NotTrusted);
     }
 
     [Fact]
@@ -362,9 +457,58 @@ public sealed class LoginVerifierTests
         using var pki = TestPki.Create();
         using var fromNational = pki.CreateLeaf(issuer: pki.National);           // ≙ 02
         using var fromIntermediate = pki.CreateLeaf(issuer: pki.Intermediate);   // ≙ 03
+        using var fromRoot = pki.CreateLeaf(issuer: pki.Root);                   // ≙ 01
         var verifier = new LoginVerifier(pki.Trust, new FakeTransport(), () => Now);
-        Assert.Equal(CheckState.Fail, verifier.Chain(fromNational, Now, []).State);
-        Assert.Equal(CheckState.Fail, verifier.Chain(fromIntermediate, Now, []).State);
+        Reason.Assert(verifier.Chain(fromNational, Now, []), CheckState.Fail, Reason.Not04);
+        Reason.Assert(verifier.Chain(fromIntermediate, Now, []), CheckState.Fail, Reason.Not04);
+        Reason.Assert(verifier.Chain(fromRoot, Now, []), CheckState.Fail, Reason.Not04);
+    }
+
+    /// M4: a CA with the pinned 04's NAME but another key is not 04 — even when it issued the leaf and the path to the
+    /// root is otherwise valid.
+    [Fact]
+    public void SameNameDifferentKeyIsNot04()
+    {
+        using var pki = TestPki.Create();
+        using var leaf = pki.CreateLeaf();
+        using var impostor = pki.IssuingCopy(sameKey: false);
+        var trust = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(pki.Issuing),
+             TestPki.PublicOnly(impostor)], TestPki.PublicOnly(impostor));
+        Reason.Assert(new LoginVerifier(trust, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail, Reason.Not04);
+        Assert.Null(trust.IssuerOf(leaf));                                        // OCSP / CRL have no issuer either
+    }
+
+    /// M4: another copy of 04 (same subject and key, different DER) among the candidates is neither used nor a reason
+    /// to refuse: the path passes and carries the PINNED 04 DER.
+    [Fact]
+    public void LegacyCopyOf04IsNeitherUsedNorRefused()
+    {
+        using var pki = TestPki.Create();
+        using var leaf = pki.CreateLeaf();
+        using var legacy = pki.IssuingCopy(sameKey: true);
+        Assert.NotEqual(legacy.RawData, pki.Issuing.RawData);
+        var trust = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(legacy),
+             TestPki.PublicOnly(pki.Issuing)], TestPki.PublicOnly(pki.Issuing));
+        var cas = new List<X509Certificate2>();
+        var result = new LoginVerifier(trust, new FakeTransport(), () => Now).Chain(leaf, Now, cas);
+        Assert.Equal(CheckState.Pass, result.State);
+        Assert.Equal(pki.Issuing.RawData, cas[0].RawData);
+        Assert.Equal(4, cas.Count);
+    }
+
+    /// B: an expired CA in the path fails the CHAIN row (the same on macOS).
+    [Fact]
+    public async Task ExpiredIntermediateFailsTheChain()
+    {
+        using var pki = TestPki.Create(intermediateTo: Now.AddDays(-1));
+        using var leaf = pki.CreateLeaf();
+        const string expected = "Гинжний гэрчилгээ (TEST ONLY Intermediate CA) хүчинтэй хугацаанаас гадуур";
+        Reason.Assert(new LoginVerifier(pki.Trust, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Fail, expected);
+        var report = await Run(pki, Online(pki, leaf), leaf);
+        Reason.Assert(Row(report, CheckNames.Chain), CheckState.Fail, expected);
+        Assert.False(report.LoggedIn);
     }
 
     /// ≙05 issues relying-party mTLS certificates with clientAuth: even with digitalSignature + clientAuth + PNOMN- and
@@ -376,9 +520,8 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf(issuer: pki.Organization);
         var report = await Run(pki, Online(pki, leaf), leaf, trust: pki.TrustWith(withOrganization: true));
         Assert.Equal(CheckState.Pass, Row(report, CheckNames.Signature).State);
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Chain).State);
-        Assert.Contains("(04)", Row(report, CheckNames.Chain).Reason, StringComparison.Ordinal);
-        Assert.Equal(CheckState.Unknown, Row(report, CheckNames.Ocsp).State);
+        Reason.Assert(Row(report, CheckNames.Chain), CheckState.Fail, Reason.Not04);
+        Reason.Assert(Row(report, CheckNames.Ocsp), CheckState.Unknown, Reason.NoIssuingCa);
         Assert.False(report.LoggedIn);
     }
 
@@ -393,13 +536,12 @@ public sealed class LoginVerifierTests
             .EnhancedKeyUsages.Cast<Oid>().Select(o => o.Value));
 
         var signReport = await Run(pki, Online(pki, sign), sign);
-        Assert.Equal(CheckState.Fail, Row(signReport, CheckNames.Chain).State);
-        Assert.Contains("KeyUsage", Row(signReport, CheckNames.Chain).Reason, StringComparison.Ordinal);
+        Reason.Assert(Row(signReport, CheckNames.Chain), CheckState.Fail, Reason.KeyUsageOnly);
         Assert.False(signReport.LoggedIn);
 
         var responderReport = await Run(pki, Online(pki, responder), responder);
         Assert.Equal(CheckState.Pass, Row(responderReport, CheckNames.Signature).State);
-        Assert.Equal(CheckState.Fail, Row(responderReport, CheckNames.Chain).State);
+        Reason.Assert(Row(responderReport, CheckNames.Chain), CheckState.Fail, Reason.NoClientAuth);
         Assert.False(responderReport.LoggedIn);
     }
 
@@ -417,12 +559,15 @@ public sealed class LoginVerifierTests
         var verifier = new LoginVerifier(pki.Trust, new FakeTransport(), () => Now);
 
         Assert.Null(LoginVerifier.AuthProfileProblem(good));
-        foreach (var bad in new[] { noKeyUsage, noEku, extraBit, noClientAuth, otherPrefix, noSerial })
+        foreach (var (bad, reason) in new[]
+                 {
+                     (noKeyUsage, Reason.KeyUsageMissing), (noEku, Reason.EkuMissing), (extraBit, Reason.KeyUsageOnly),
+                     (noClientAuth, Reason.NoClientAuth), (otherPrefix, Reason.SerialNumber), (noSerial, Reason.SerialNumber),
+                 })
         {
-            Assert.NotNull(LoginVerifier.AuthProfileProblem(bad));
-            Assert.Equal(CheckState.Fail, verifier.Chain(bad, Now, []).State);
+            Assert.Equal(reason, LoginVerifier.AuthProfileProblem(bad));
+            Reason.Assert(verifier.Chain(bad, Now, []), CheckState.Fail, reason);
         }
-        Assert.Contains("serialNumber", LoginVerifier.AuthProfileProblem(noSerial), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -430,12 +575,13 @@ public sealed class LoginVerifierTests
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf();
-        Assert.Equal(CheckState.Unknown,
-            new LoginVerifier(new TrustAnchors([], [], null), new FakeTransport(), () => Now).Chain(leaf, Now, []).State);
+        Reason.Assert(new LoginVerifier(new TrustAnchors([], [], null), new FakeTransport(), () => Now).Chain(leaf, Now, []),
+            CheckState.Unknown, "Итгэлийн үндэс (trust anchor) апп-д алга");
         var noIssuing = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
             [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate)], TestPki.PublicOnly(pki.Issuing));
         Assert.Null(noIssuing.IssuingCa);
-        Assert.Equal(CheckState.Unknown, new LoginVerifier(noIssuing, new FakeTransport(), () => Now).Chain(leaf, Now, []).State);
+        Reason.Assert(new LoginVerifier(noIssuing, new FakeTransport(), () => Now).Chain(leaf, Now, []), CheckState.Unknown,
+            Reason.NoIssuingCa);
     }
 
     [Fact]
@@ -446,7 +592,7 @@ public sealed class LoginVerifierTests
         var report = await Run(pki, Online(pki, leaf), leaf);
 
         Assert.Equal(CheckState.Pass, Row(report, CheckNames.Chain).State);
-        Assert.Equal(CheckState.Fail, Row(report, CheckNames.Validity).State);
+        Reason.Assert(Row(report, CheckNames.Validity), CheckState.Fail, "Гэрчилгээний хугацаа ");
         Assert.False(report.LoggedIn);
     }
 
@@ -455,7 +601,9 @@ public sealed class LoginVerifierTests
     {
         using var pki = TestPki.Create();
         using var leaf = pki.CreateLeaf(from: Now.AddDays(1), to: Now.AddDays(30));
-        Assert.Equal(CheckState.Fail, LoginVerifier.Validity(leaf, [], Now).State);
+        var result = LoginVerifier.Validity(leaf, [], Now);
+        Reason.Assert(result, CheckState.Fail, "Гэрчилгээ ");
+        Assert.EndsWith("-аас хүчинтэй болно", result.Reason, StringComparison.Ordinal);
     }
 
     /// notAfter is inclusive: valid AT notAfter, expired one second later.
@@ -466,7 +614,7 @@ public sealed class LoginVerifierTests
         using var leaf = pki.CreateLeaf(from: Now.AddDays(-1), to: Now.AddMinutes(1));
         var notAfter = new DateTimeOffset(leaf.NotAfter.ToUniversalTime(), TimeSpan.Zero);
         Assert.Equal(CheckState.Pass, LoginVerifier.Validity(leaf, [], notAfter).State);
-        Assert.Equal(CheckState.Fail, LoginVerifier.Validity(leaf, [], notAfter.AddSeconds(1)).State);
+        Reason.Assert(LoginVerifier.Validity(leaf, [], notAfter.AddSeconds(1)), CheckState.Fail, "Гэрчилгээний хугацаа ");
     }
 
     [Fact]
@@ -476,7 +624,8 @@ public sealed class LoginVerifierTests
         var report = await new LoginVerifier(new TrustAnchors([], [], null), new FakeTransport(), () => Now)
             .RunAsync(TestPki.Origin, Challenge, [0x30, 0x00], (_, _) => { signed = true; return Task.FromResult(Array.Empty<byte>()); });
         Assert.False(signed);
-        Assert.False(report.LoggedIn);
-        Assert.StartsWith("Нэвтэрч чадсангүй: ", report.Summary, StringComparison.Ordinal);
+        AssertRejected(report, Reason.Unreadable);
+        Assert.StartsWith("Нэвтэрч чадсангүй: " + CheckNames.Signature + " — " + Reason.Unreadable, report.Summary,
+            StringComparison.Ordinal);
     }
 }

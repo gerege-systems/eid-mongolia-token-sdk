@@ -8,12 +8,13 @@ public sealed class TokenRow
 {
     public TokenRow(TokenSummary token)
     {
-        SlotId = token.SlotId;
+        Serial = token.Serial;
         Label = string.IsNullOrEmpty(token.Label) ? "(нэргүй токен)" : token.Label;
         Details = "Серийн дугаар: " + Dash(token.Serial) + "   ·   Загвар: " + Dash(token.Model);
     }
 
-    public ulong SlotId { get; }
+    /// The token is addressed by its serial number on every call (never by a remembered slot ID).
+    public string Serial { get; }
     public string Label { get; }
     public string Details { get; }
 

@@ -51,4 +51,19 @@ public sealed class TrustAnchorsTests
         Assert.NotNull(pki.Trust.IssuingCa);
         Assert.Null(new TrustAnchors([TestPki.PublicOnly(pki.Root)], [], TestPki.PublicOnly(pki.Issuing)).IssuingCa);
     }
+
+    /// L1: the public constructor enforces the 04 pin — a test CA can only be injected through the internal one.
+    [Fact]
+    public void PublicConstructorEnforcesThePin()
+    {
+        using var pki = TestPki.Create();
+        var withTestCa = new TrustAnchors([TestPki.PublicOnly(pki.Root)],
+            [TestPki.PublicOnly(pki.National), TestPki.PublicOnly(pki.Intermediate), TestPki.PublicOnly(pki.Issuing)]);
+        Assert.Null(withTestCa.IssuingCa);
+        var bundled = TrustAnchors.Bundled();
+        var rebuilt = new TrustAnchors(bundled.Roots, bundled.Intermediates);
+        Assert.NotNull(rebuilt.IssuingCa);
+        Assert.Equal(TrustAnchors.IssuingCaSha256, TrustAnchors.Sha256Hex(rebuilt.IssuingCa!));
+        Assert.DoesNotContain(typeof(TrustAnchors).GetConstructors(), c => c.GetParameters().Length != 2);
+    }
 }

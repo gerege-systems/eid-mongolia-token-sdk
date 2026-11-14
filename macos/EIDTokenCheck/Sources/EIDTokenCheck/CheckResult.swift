@@ -50,21 +50,44 @@ public struct CheckResult: Sendable, Equatable {
 /// not be performed (e.g. OCSP unreachable) means not logged in.
 public struct LoginReport: Sendable, Equatable {
     public let checks: [CheckResult]
-    /// Certificate holder (display only).
+    /// Certificate holder's name (CN, else «given surname») — display only; never identify a user by it.
     public let subjectName: String
-    /// Set when the test stopped before the checks could run (invalid origin, unreadable certificate, …).
+    /// Set when the test stopped before the checks could run (token refused, no eID certificate, …).
     public let stopReason: String?
+    /// The AUTH certificate's subject serialNumber as read (see `subjectSerialNumber`).
+    let holderSerialNumber: String?
 
     public init(checks: [CheckResult], subjectName: String, stopReason: String? = nil) {
+        self.init(checks: checks, subjectName: subjectName, subjectSerialNumber: nil, stopReason: stopReason)
+    }
+
+    init(checks: [CheckResult], subjectName: String, subjectSerialNumber: String?, stopReason: String? = nil) {
         self.checks = checks
         self.subjectName = subjectName
+        self.holderSerialNumber = subjectSerialNumber
         self.stopReason = stopReason
     }
+
+    /// The verified user: the AUTH certificate's subject serialNumber (`PNOMN-…`, README §6.6) — ONLY when
+    /// `loggedIn`, otherwise nil. Identify the user by this, never by the name.
+    public var subjectSerialNumber: String? { loggedIn ? holderSerialNumber : nil }
 
     /// Every row «шалгаж чадсангүй» with `reason`; not logged in.
     public static func notStarted(_ reason: String) -> LoginReport {
         LoginReport(checks: CheckKind.allCases.map { CheckResult($0, .unavailable, reason) }, subjectName: "",
                     stopReason: reason)
+    }
+
+    /// The reason on the rows that were not run because the input was rejected.
+    public static let notRunReason = "Шалгаагүй — оролт буруу"
+
+    /// Invalid origin, a challenge that is not exactly 32 bytes, or an AUTH certificate that is not one strict DER
+    /// certificate: «Challenge-ийн гарын үсэг» ✗ with `reason`, every other row «шалгаж чадсангүй» — decided before
+    /// anything is signed and WITHOUT any network request. The same on Windows.
+    public static func inputRejected(_ reason: String) -> LoginReport {
+        LoginReport(checks: CheckKind.allCases.map {
+            $0 == .signature ? CheckResult($0, .failed, reason) : CheckResult($0, .unavailable, notRunReason)
+        }, subjectName: "")
     }
 
     public var loggedIn: Bool {

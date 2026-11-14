@@ -55,11 +55,14 @@ internal sealed class TestPki : IDisposable
     public TrustAnchors Trust => TrustWith(false);
 
     /// <paramref name="caOcsp"/> / <paramref name="caCrl"/>: the issuing CA carries AIA (OCSP) / CDP like the real 04.
-    public static TestPki Create(string name = "TEST ONLY", bool caOcsp = true, bool caCrl = true)
+    /// <paramref name="intermediateTo"/>: the intermediate CA's (≙03) notAfter (default: in four years).
+    public static TestPki Create(string name = "TEST ONLY", bool caOcsp = true, bool caCrl = true,
+                                 DateTimeOffset? intermediateTo = null)
     {
         var root = CreateCa(name + " Root CA", null, Now.AddYears(-1), Now.AddYears(5), pathLength: null);
         var national = CreateCa(name + " National Issuing CA", root, Now.AddDays(-365), Now.AddYears(5), pathLength: null);
-        var intermediate = CreateCa(name + " Intermediate CA", national, Now.AddDays(-360), Now.AddYears(4), pathLength: null);
+        var intermediate = CreateCa(name + " Intermediate CA", national, Now.AddDays(-360), intermediateTo ?? Now.AddYears(4),
+            pathLength: null);
         var issuing = CreateCa(name + " Issuing CA", intermediate, Now.AddDays(-350), Now.AddYears(3), pathLength: 0,
             ocspUrl: caOcsp ? CaOcspUrl : null, crlUrl: caCrl ? CaCrlUrl : null);
         var organization = CreateCa(name + " Organization Issuing CA", intermediate, Now.AddDays(-350), Now.AddYears(3),
@@ -67,10 +70,12 @@ internal sealed class TestPki : IDisposable
         return new TestPki(root, national, intermediate, issuing, organization);
     }
 
+    /// <paramref name="key"/>: the CA's key (default: a new one) — the same key gives another copy of an existing CA.
     public static X509Certificate2 CreateCa(string commonName, X509Certificate2? issuer, DateTimeOffset from, DateTimeOffset to,
-                                            int? pathLength, string? ocspUrl = null, string? crlUrl = null)
+                                            int? pathLength, string? ocspUrl = null, string? crlUrl = null, ECDsa? key = null)
     {
-        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var ownKey = key is null ? ECDsa.Create(ECCurve.NamedCurves.nistP256) : null;
+        key ??= ownKey!;
         var request = new CertificateRequest("CN=" + commonName + ", C=MN", key, HashAlgorithmName.SHA256);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, pathLength is not null, pathLength ?? 0, true));
         request.CertificateExtensions.Add(new X509KeyUsageExtension(
@@ -85,7 +90,10 @@ internal sealed class TestPki : IDisposable
             return request.CreateSelfSigned(from, to);
         }
         request.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(issuer, true, false));
-        using var cert = request.Create(issuer, from, to, RandomSerial());
+        // Signed with the issuer's key directly: unlike Create(issuerCertificate, …) this does not refuse a validity
+        // period outside the issuer's (needed for the expired-intermediate fixture).
+        using var issuerKey = issuer.GetECDsaPrivateKey()!;
+        using var cert = request.Create(issuer.SubjectName, X509SignatureGenerator.CreateForECDsa(issuerKey), from, to, RandomSerial());
         return cert.CopyWithPrivateKey(key);
     }
 
@@ -127,6 +135,15 @@ internal sealed class TestPki : IDisposable
         request.CertificateExtensions.Add(X509AuthorityKeyIdentifierExtension.CreateFromCertificate(issuer, true, false));
         using var cert = request.Create(issuer, from ?? Now.AddDays(-1), to ?? Now.AddDays(365), RandomSerial());
         return cert.CopyWithPrivateKey(key);
+    }
+
+    /// Another certificate of the issuing CA's (≙04) subject, issued by ≙03: <paramref name="sameKey"/> = the same key
+    /// (a re-issued / legacy copy: same subject and key, different DER), otherwise a new key (same name, other key).
+    public X509Certificate2 IssuingCopy(bool sameKey)
+    {
+        using var key = sameKey ? Issuing.GetECDsaPrivateKey()! : ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        return CreateCa(Issuing.GetNameInfo(X509NameType.SimpleName, false), Intermediate, Now.AddDays(-100), Now.AddDays(100), 0,
+            CaOcspUrl, CaCrlUrl, key);
     }
 
     /// A delegated OCSP responder certificate issued by <paramref name="issuer"/>.
@@ -173,7 +190,7 @@ internal sealed class TestPki : IDisposable
     /// and one extra CRL extension (content NULL).
     public static byte[] RawCrl(X509Certificate2 issuer, DateTimeOffset thisUpdate, DateTimeOffset? nextUpdate,
                                 IEnumerable<X509Certificate2>? revoked = null, string? extensionOid = null, bool critical = true,
-                                bool generalized = false)
+                                bool generalized = false, byte booleanByte = 0xFF)
     {
         var w = new AsnWriter(AsnEncodingRules.DER);
         using (w.PushSequence())
@@ -213,7 +230,7 @@ internal sealed class TestPki : IDisposable
                 using (w.PushSequence())
                 {
                     w.WriteObjectIdentifier(extensionOid);
-                    if (critical) w.WriteBoolean(true);
+                    if (critical) w.WriteEncodedValue(new byte[] { 0x01, 0x01, booleanByte });
                     w.WriteOctetString([0x05, 0x00]);
                 }
             }
@@ -246,7 +263,8 @@ internal sealed class TestPki : IDisposable
     /// <paramref name="status"/>: 0 good, 1 revoked, 2 unknown.
     public static byte[] OcspResponse(X509Certificate2 subject, X509Certificate2 issuer, X509Certificate2 signer, int status,
                                       DateTimeOffset thisUpdate, DateTimeOffset? nextUpdate, byte[]? nonceExtValue = null,
-                                      bool embedSigner = false, string certIdHash = Der.Sha1)
+                                      bool embedSigner = false, string certIdHash = Der.Sha1,
+                                      IEnumerable<byte[]>? otherSingles = null, byte[]? singleSuffix = null)
     {
         var w = new AsnWriter(AsnEncodingRules.DER);
         using (w.PushSequence())                                                   // ResponseData
@@ -257,6 +275,8 @@ internal sealed class TestPki : IDisposable
             }
             w.WriteGeneralizedTime(thisUpdate, omitFractionalSeconds: true);       // producedAt
             using (w.PushSequence())                                               // responses
+            {
+            foreach (var other in otherSingles ?? []) w.WriteEncodedValue(other);  // entries before ours
             using (w.PushSequence())                                               // SingleResponse
             {
                 Ocsp.WriteCertId(w, certIdHash, subject, issuer);
@@ -283,6 +303,8 @@ internal sealed class TestPki : IDisposable
                         w.WriteGeneralizedTime(next, omitFractionalSeconds: true);
                     }
                 }
+                if (singleSuffix is not null) w.WriteEncodedValue(singleSuffix);
+            }
             }
             if (nonceExtValue is not null)
             {
@@ -347,7 +369,29 @@ internal sealed class TestPki : IDisposable
         return null;
     }
 
-    public static X509Certificate2 PublicOnly(X509Certificate2 c) => new(c.RawData);
+    public static X509Certificate2 PublicOnly(X509Certificate2 c) => X509CertificateLoader.LoadCertificate(c.RawData);
+
+    /// <paramref name="der"/> with the first occurrence of <paramref name="old"/> replaced by <paramref name="new"/>
+    /// (the same length, so every DER length stays valid).
+    public static byte[] ReplaceFirst(byte[] der, byte[] old, byte[] @new)
+    {
+        Assert.Equal(old.Length, @new.Length);
+        var at = der.AsSpan().IndexOf(old);
+        Assert.True(at >= 0, "pattern not found");
+        var copy = (byte[])der.Clone();
+        @new.CopyTo(copy, at);
+        return copy;
+    }
+
+    /// One encoded TLV.
+    public static byte[] Tlv(byte tag, byte[] content)
+    {
+        var w = new AsnWriter(AsnEncodingRules.DER);
+        w.WriteOctetString(content);
+        var encoded = w.Encode();
+        encoded[0] = tag;
+        return encoded;
+    }
 
     private static byte[] RandomSerial()
     {

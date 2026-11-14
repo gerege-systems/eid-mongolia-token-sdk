@@ -97,12 +97,20 @@ public enum DER {
     }
 
     /// X.509 `Time`: UTCTime or GeneralizedTime (UTC, `Z`). UTCTime YY ≥ 50 → 19YY (RFC 5280 §4.1.2.5.1).
+    /// DER form only, the same as on Windows: UTCTime `YYMMDDHHMMSSZ`; GeneralizedTime `YYYYMMDDHHMMSS[.f…]Z` (a
+    /// fraction has at least one digit and no trailing zero; it is ignored). A date that does not exist (month 13,
+    /// 30 February, 31 April, second 60 …) is rejected.
     public static func time(_ node: DERNode) -> Date? {
         guard let text = String(bytes: node.value, encoding: .ascii), text.hasSuffix("Z") else { return nil }
         var digits = String(text.dropLast())
         if node.tag == Tag.generalizedTime, let dot = digits.firstIndex(of: ".") {
+            let fraction = digits[digits.index(after: dot)...]
+            guard !fraction.isEmpty, fraction.allSatisfy({ $0.isASCII && $0.isNumber }), fraction.last != "0" else {
+                return nil
+            }
             digits = String(digits[..<dot])                          // fractional seconds: ignored
         }
+        guard digits.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
         let year: Int
         let rest: [Character]
         switch node.tag {
@@ -117,18 +125,47 @@ public enum DER {
         default:
             return nil
         }
-        guard rest.count == 10, rest.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+        guard rest.count == 10 else { return nil }
         func field(_ i: Int) -> Int { Int(String(rest[i..<(i + 2)])) ?? -1 }
         let month = field(0), day = field(2), hour = field(4), minute = field(6), second = field(8)
-        guard (1...12).contains(month), (1...31).contains(day), (0...23).contains(hour),
-              (0...59).contains(minute), (0...60).contains(second) else { return nil }
+        guard year >= 1, (1...12).contains(month), (1...daysIn(month: month, year: year)).contains(day),
+              (0...23).contains(hour), (0...59).contains(minute), (0...59).contains(second) else { return nil }
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(identifier: "UTC") ?? calendar.timeZone
         return calendar.date(from: DateComponents(year: year, month: month, day: day,
                                                   hour: hour, minute: minute, second: second))
     }
 
+    static func daysIn(month: Int, year: Int) -> Int {
+        switch month {
+        case 2: return (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 ? 29 : 28
+        case 4, 6, 9, 11: return 30
+        default: return 31
+        }
+    }
+
     public static func isTime(_ tag: UInt8) -> Bool { tag == Tag.utcTime || tag == Tag.generalizedTime }
+
+    /// DER BOOLEAN: one content byte, 0xFF (TRUE) or 0x00 (FALSE); any other encoding (e.g. 0x01 for TRUE) is not
+    /// DER and yields nil — the same rule as on Windows.
+    public static func boolean(_ node: DERNode) -> Bool? {
+        guard node.tag == Tag.boolean, node.value.count == 1 else { return nil }
+        switch node.value[0] {
+        case 0xFF: return true
+        case 0x00: return false
+        default: return nil
+        }
+    }
+
+    /// DER INTEGER content: at least one byte, minimal two's-complement (no redundant leading 0x00 / 0xFF).
+    public static func isMinimalInteger(_ value: [UInt8]) -> Bool {
+        guard let first = value.first else { return false }
+        guard value.count > 1 else { return true }
+        let second = value[1]
+        if first == 0x00 && second & 0x80 == 0 { return false }
+        if first == 0xFF && second & 0x80 != 0 { return false }
+        return true
+    }
 
     // MARK: Writing
 

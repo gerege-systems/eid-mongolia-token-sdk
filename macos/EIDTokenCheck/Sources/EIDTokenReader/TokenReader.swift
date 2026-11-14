@@ -101,6 +101,9 @@ public enum TokenError: LocalizedError, Equatable {
     case pinLocked
     case pinLength
     case keyNotFound
+    /// C_Login answered CKR_USER_ALREADY_LOGGED_IN: some other session of this process is logged in to the token.
+    /// This reader never logs in twice, so it refuses instead of signing on a login it did not make.
+    case alreadyLoggedIn
     case pkcs11(String, UInt)
 
     public var errorDescription: String? {
@@ -111,6 +114,7 @@ public enum TokenError: LocalizedError, Equatable {
         case .pinLocked: return "PIN түгжигдсэн"
         case .pinLength: return "PIN-ий урт буруу"
         case .keyNotFound: return "Токен дээр AUTH гэрчилгээтэй таарах хувийн түлхүүр алга"
+        case .alreadyLoggedIn: return "Токенд өөр session нэвтэрсэн байна — энэ оролдлого гарын үсэг зурахгүй"
         case .pkcs11(let function, let rv): return String(format: "Токен гарын үсэг зурж чадсангүй (%@ CKR=0x%08lX)", function, rv)
         }
     }
@@ -120,6 +124,7 @@ public enum TokenError: LocalizedError, Equatable {
         case PKCS11Module.CKR_PIN_INCORRECT: return .pinIncorrect
         case PKCS11Module.CKR_PIN_LOCKED: return .pinLocked
         case PKCS11Module.CKR_PIN_LEN_RANGE: return .pinLength
+        case PKCS11Module.CKR_USER_ALREADY_LOGGED_IN: return .alreadyLoggedIn
         case PKCS11Module.CKR_TOKEN_NOT_PRESENT, PKCS11Module.CKR_DEVICE_REMOVED, PKCS11Module.CKR_SLOT_ID_INVALID:
             return .tokenNotFound
         default: return .pkcs11(function, rv)
@@ -192,9 +197,9 @@ public final class TokenReader: TokenSource {
                 let rv = pinBytes.withUnsafeBufferPointer {
                     module.login(session, PKCS11Module.CKU_USER, $0.baseAddress, PKCS11Module.CK_ULONG($0.count))
                 }
-                guard rv == PKCS11Module.CKR_OK || rv == PKCS11Module.CKR_USER_ALREADY_LOGGED_IN else {
-                    throw TokenError.from("C_Login", rv)
-                }
+                // Only our own C_Login counts: CKR_USER_ALREADY_LOGGED_IN means a login this call did not make
+                // (this session is fresh) — refused, the same as on Windows.
+                guard rv == PKCS11Module.CKR_OK else { throw TokenError.from("C_Login", rv) }
                 defer { _ = module.logout(session) }
                 guard let key = try module.find(session: session, objectClass: PKCS11Module.CKO_PRIVATE_KEY,
                                                 id: keyID, max: 1).first else { throw TokenError.keyNotFound }

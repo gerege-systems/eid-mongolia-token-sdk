@@ -95,7 +95,7 @@ public sealed class CliRunner
             {
                 try
                 {
-                    var certificates = source.ReadCertificates(token.SlotId);
+                    var certificates = source.ReadCertificates(token.Serial);
                     entry.Certificates.AddRange(certificates.Select(CertificateView.Describe));
                     if (!TokenLogin.HasEidCertificates(certificates)) entry.Note = TokenLogin.NoEidCertificates;
                 }
@@ -154,7 +154,7 @@ public sealed class CliRunner
             EmitError(NoPin, options.Json);
             return ExitCode.Usage;
         }
-        var report = await TokenLogin.RunAsync(source, token.SlotId, options.Origin, pin, _verifier).ConfigureAwait(false);
+        var report = await TokenLogin.RunAsync(source, token.Serial, options.Origin, pin, _verifier).ConfigureAwait(false);
         if (options.Json)
         {
             _out.WriteLine(Json(w =>

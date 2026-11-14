@@ -44,6 +44,9 @@ public static class CliArguments
     public const string PinOnCommandLine = "PIN-ийг командын мөрөөр өгөхгүй — stdin-ээр (pipe эсвэл файл) дамжуулна";
     public const string SerialRequired = "--login-д --serial заавал (PIN оруулах токеныг тодорхой заана)";
 
+    /// Never echoes the argument itself: it may be a PIN typed in the wrong place.
+    public const string UnknownArgument = "Үл мэдэгдэх аргумент (утгыг нь хэвлэхгүй) — --help-ийг үзнэ үү";
+
     public static ParseResult Parse(IReadOnlyList<string> arguments)
     {
         ArgumentNullException.ThrowIfNull(arguments);
@@ -90,7 +93,7 @@ public static class CliArguments
                     json = true;
                     break;
                 default:
-                    return ParseResult.Usage("Үл мэдэгдэх аргумент: " + arg);
+                    return ParseResult.Usage(UnknownArgument);
             }
             i++;
         }

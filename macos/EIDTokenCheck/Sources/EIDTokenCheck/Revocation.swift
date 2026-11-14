@@ -136,37 +136,88 @@ public enum OCSPCheck {
             return fail("OCSP хариунд nonce алга (AUTH гэрчилгээнд заавал)")
         }
 
-        // The SingleResponse for this certificate (same serial AND same issuer hashes, SHA-1 or SHA-256).
-        let serial = DER.normalizedInteger(leaf.serial)
-        for single in singles {
-            guard let s = single.children, s.count >= 3, let certID = s[0].children, certID.count == 4,
-                  let hashAlg = DER.algorithmOID(certID[0]), certID[3].tag == DER.Tag.integer,
-                  DER.normalizedInteger(certID[3].value) == serial else { continue }
-            guard let nameHash = hash(hashAlg, issuer.subject), let keyHash = hash(hashAlg, issuer.subjectPublicKey),
-                  certID[1].value == nameHash, certID[2].value == keyHash else { continue }
-            guard let thisUpdate = DER.time(s[2]) else { return malformed }
-            var nextUpdate: Date?
-            if s.count >= 4, s[3].tag == DER.Tag.context(0) {
-                guard let n = s[3].children?.first.flatMap(DER.time) else { return malformed }
-                nextUpdate = n
-            }
+        // The SingleResponse for this certificate (same serial AND same issuer hashes, SHA-1 or SHA-256). Entries
+        // whose CertID is about another certificate — or cannot be read as a CertID at all — are skipped; the
+        // matching entry must be well-formed, otherwise ✗ (the same rule on Windows).
+        for single in singles where certIDMatches(single, leaf: leaf, issuer: issuer) {
+            guard let entry = SingleResponse(single) else { return malformed }
+            let thisUpdate = entry.thisUpdate, nextUpdate = entry.nextUpdate
             let window = "thisUpdate \(DisplayDate.string(thisUpdate))"
                 + (nextUpdate.map { ", nextUpdate \(DisplayDate.string($0))" } ?? "")
-            if s[1].tag == 0xA1 {                                        // revoked: cancellation never expires
-                let at = s[1].children?.first.flatMap(DER.time).map { " (\(DisplayDate.string($0)))" } ?? ""
-                return fail("Гэрчилгээ цуцлагдсан" + at)
+            if let at = entry.revokedAt {                                // revoked: cancellation never expires
+                return fail("Гэрчилгээ цуцлагдсан (\(DisplayDate.string(at)))")
             }
-            guard s[1].tag == 0x80 || s[1].tag == 0x82 else { return malformed }
             if Freshness.isFuture(thisUpdate: thisUpdate, now: now) {
                 return fail("OCSP хариу ирээдүйн огноотой (\(window))")
             }
             if Freshness.isStale(thisUpdate: thisUpdate, nextUpdate: nextUpdate, now: now) {
                 return fail("OCSP хариу хуучирсан (\(window))")
             }
-            if s[1].tag == 0x82 { return fail("OCSP: unknown — responder энэ гэрчилгээг танихгүй") }
+            if entry.unknown { return fail("OCSP: unknown — responder энэ гэрчилгээг танихгүй") }
             return CheckResult(.ocsp, .passed, "good (\(window))")
         }
         return fail("OCSP хариунд энэ гэрчилгээний төлөв алга (CertID таарахгүй)")
+    }
+
+    /// `single` is a SEQUENCE starting with a well-formed CertID { AlgorithmIdentifier, OCTET STRING, OCTET STRING,
+    /// INTEGER } (SHA-1 or SHA-256) for `leaf` issued by `issuer`. Anything else — another certificate, or no
+    /// readable CertID — is false (the entry is skipped).
+    static func certIDMatches(_ single: DERNode, leaf: ParsedCertificate, issuer: ParsedCertificate) -> Bool {
+        guard single.tag == DER.Tag.sequence, let s = single.children, let first = s.first,
+              first.tag == DER.Tag.sequence, let certID = first.children, certID.count == 4,
+              let hashAlg = DER.algorithmOID(certID[0]),
+              certID[1].tag == DER.Tag.octetString, certID[2].tag == DER.Tag.octetString,
+              certID[3].tag == DER.Tag.integer, DER.isMinimalInteger(certID[3].value),
+              let nameHash = hash(hashAlg, issuer.subject), let keyHash = hash(hashAlg, issuer.subjectPublicKey) else {
+            return false
+        }
+        return certID[1].value == nameHash && certID[2].value == keyHash
+            && DER.normalizedInteger(certID[3].value) == DER.normalizedInteger(leaf.serial)
+    }
+
+    /// SingleResponse { certID, certStatus, thisUpdate, nextUpdate [0] EXPLICIT OPTIONAL,
+    /// singleExtensions [1] EXPLICIT OPTIONAL } — strictly: good [0] / unknown [2] IMPLICIT NULL (empty), revoked [1]
+    /// { revocationTime, revocationReason [0] EXPLICIT OPTIONAL }, nothing else and nothing after.
+    struct SingleResponse {
+        let thisUpdate: Date
+        let nextUpdate: Date?
+        let revokedAt: Date?
+        let unknown: Bool
+
+        init?(_ single: DERNode) {
+            guard let s = single.children, (3...5).contains(s.count), let thisUpdate = DER.time(s[2]) else { return nil }
+            switch s[1].tag {
+            case 0x80, 0x82:
+                guard s[1].value.isEmpty else { return nil }
+                revokedAt = nil
+                unknown = s[1].tag == 0x82
+            case 0xA1:
+                guard let info = s[1].children, (1...2).contains(info.count), let at = DER.time(info[0]) else { return nil }
+                if info.count == 2 {
+                    guard info[1].tag == DER.Tag.context(0), let reason = info[1].children, reason.count == 1,
+                          reason[0].tag == DER.Tag.enumerated else { return nil }
+                }
+                revokedAt = at
+                unknown = false
+            default:
+                return nil
+            }
+            var rest = s.dropFirst(3)
+            var next: Date?
+            if let n = rest.first, n.tag == DER.Tag.context(0) {
+                guard let inner = n.children, inner.count == 1, let time = DER.time(inner[0]) else { return nil }
+                next = time
+                rest = rest.dropFirst()
+            }
+            if let e = rest.first, e.tag == DER.Tag.context(1) {
+                guard let inner = e.children, inner.count == 1, inner[0].tag == DER.Tag.sequence,
+                      let items = inner[0].children, Extensions.parse(items) != nil else { return nil }
+                rest = rest.dropFirst()
+            }
+            guard rest.isEmpty else { return nil }
+            self.thisUpdate = thisUpdate
+            self.nextUpdate = next
+        }
     }
 
     /// The candidate named by ResponderID: byName [1] = subject Name, byKey [2] = SHA-1 of the key.
@@ -202,8 +253,8 @@ enum Extensions {
                   f.last?.tag == DER.Tag.octetString else { return nil }
             var critical = false
             if f.count == 3 {
-                guard f[1].tag == DER.Tag.boolean, f[1].value.count == 1 else { return nil }
-                critical = f[1].value[0] != 0
+                guard let flag = DER.boolean(f[1]) else { return nil }        // DER: 0xFF / 0x00 only
+                critical = flag
             }
             out.append(Header(oid: f[0].value, critical: critical, value: f[f.count - 1].value))
         }

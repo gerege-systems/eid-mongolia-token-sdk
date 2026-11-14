@@ -114,6 +114,7 @@ struct Fixture: @unchecked Sendable {
     let org: TestEntity
     let leaf: TestEntity
     let responder: TestEntity
+    let caURLs: [[UInt8]]
 
     /// `leafKeyUsage` / `leafEKU` nil = the extension is absent; `leafSerialNumber` nil = no subject serialNumber.
     /// `caOCSP` / `caCRL`: the issuing CA carries AIA / CDP.
@@ -121,25 +122,27 @@ struct Fixture: @unchecked Sendable {
          leafKeyUsage: [UInt8]? = TestPKI.authKeyUsage, leafEKU: [UInt8]? = TestPKI.eku(OID.ekuClientAuth, OID.ekuEmailProtection),
          leafSerialNumber: String? = "PNOMN-TEST0001", leafIssuer: Level = .ca,
          responderEKU: Bool = true, responderNotBefore: Date? = nil, responderNotAfter: Date? = nil,
-         caOCSP: Bool = true, caCRL: Bool = true) {
+         caOCSP: Bool = true, caCRL: Bool = true, intermediateNotAfter: Date? = nil) {
         let now = Date(timeIntervalSince1970: floor(Date().timeIntervalSince1970))
         self.now = now
-        func makeCA(_ cn: String, serial: UInt8, issuer: TestEntity?, extra: [[UInt8]] = []) -> TestEntity {
+        func makeCA(_ cn: String, serial: UInt8, issuer: TestEntity?, extra: [[UInt8]] = [],
+                    notAfter: Date? = nil) -> TestEntity {
             let key = P256.Signing.PrivateKey()
             let name = E.name(cn: cn)
             return TestEntity(key: key, name: name, serial: [serial], der: TestPKI.certificate(
                 serial: [serial], subject: name, key: key.publicKey, issuer: issuer?.name ?? name,
-                issuerKey: issuer?.key ?? key, notBefore: now - 365 * Self.day, notAfter: now + 3650 * Self.day,
+                issuerKey: issuer?.key ?? key, notBefore: now - 365 * Self.day, notAfter: notAfter ?? now + 3650 * Self.day,
                 extensions: [TestPKI.caBasicConstraints, TestPKI.caKeyUsage] + extra))
         }
         let root = makeCA("TEST ONLY Root CA", serial: 0x01, issuer: nil)
         let national = makeCA("TEST ONLY National Issuing CA", serial: 0x02, issuer: root)
-        let intermediate = makeCA("TEST ONLY Intermediate CA", serial: 0x03, issuer: national)
+        let intermediate = makeCA("TEST ONLY Intermediate CA", serial: 0x03, issuer: national, notAfter: intermediateNotAfter)
         let caURLs = (caOCSP ? [TestPKI.aia(ocsp: Self.caOCSPURL)] : []) + (caCRL ? [TestPKI.cdp(Self.caCRLURL)] : [])
         let ca = makeCA("TEST ONLY Issuing CA", serial: 0x04, issuer: intermediate, extra: caURLs)
         let org = makeCA("TEST ONLY Organization Issuing CA", serial: 0x05, issuer: intermediate,
                          extra: [TestPKI.aia(ocsp: Self.caOCSPURL), TestPKI.cdp(Self.caCRLURL)])
         self.root = root
+        self.caURLs = caURLs
         self.national = national
         self.intermediate = intermediate
         self.ca = ca
@@ -169,6 +172,16 @@ struct Fixture: @unchecked Sendable {
             extensions: [TestPKI.authKeyUsage] + (responderEKU ? [TestPKI.eku(OID.ekuOCSPSigning)] : [])))
     }
 
+    /// Another certificate of the issuing CA's (≙04) subject: `sameKey` = the same key (a re-issued / legacy copy:
+    /// same subject and key, different DER), otherwise a new key (same name, different key). Issued by ≙03.
+    func issuingCACopy(sameKey: Bool, serial: UInt8 = 0x44) -> TestEntity {
+        let key = sameKey ? ca.key : P256.Signing.PrivateKey()
+        return TestEntity(key: key, name: ca.name, serial: [serial], der: TestPKI.certificate(
+            serial: [serial], subject: ca.name, key: key.publicKey, issuer: intermediate.name, issuerKey: intermediate.key,
+            notBefore: now - 100 * Self.day, notAfter: now + 100 * Self.day,
+            extensions: [TestPKI.caBasicConstraints, TestPKI.caKeyUsage] + caURLs))
+    }
+
     /// The bundled set: root, 02, 03, 04 (the pinned issuing CA). `withOrg` also bundles the sibling CA (≙05).
     func trust(withOrg: Bool = false) -> TrustStore {
         TrustStore(anchors: [root.der], intermediates: [national.der, intermediate.der, ca.der] + (withOrg ? [org.der] : []),
@@ -194,7 +207,8 @@ struct Fixture: @unchecked Sendable {
     func ocsp(status: Status = .good, thisUpdate: Date? = nil, nextUpdate: Date?? = .none,
               signer: TestEntity? = nil, embedSigner: Bool = true, certID: [UInt8]? = nil,
               tamper: Bool = false, responseStatus: UInt8 = 0, nonceExt: [UInt8]? = nil,
-              subject: TestEntity? = nil, issuer: TestEntity? = nil) -> [UInt8] {
+              subject: TestEntity? = nil, issuer: TestEntity? = nil,
+              otherSingles: [[UInt8]] = [], singleSuffix: [UInt8] = []) -> [UInt8] {
         if responseStatus != 0 { return E.seq(E.tlv(0x0A, [responseStatus])) }
         let key = signer?.key ?? (issuer ?? ca).key
         let statusDER: [UInt8]
@@ -206,7 +220,9 @@ struct Fixture: @unchecked Sendable {
         let next: Date? = nextUpdate ?? (now + 3600)
         var single = (certID ?? self.certID(subject: subject, issuer: issuer)) + statusDER + E.gtime(thisUpdate ?? now - 60)
         if let next { single += E.ctx(0, E.gtime(next)) }
-        var data = E.ctx(2, E.octet(TestPKI.ski(key.publicKey))) + E.gtime(now) + E.seq(E.tlv(0x30, single))
+        single += singleSuffix
+        let responses = otherSingles.flatMap { $0 } + E.tlv(0x30, single)
+        var data = E.ctx(2, E.octet(TestPKI.ski(key.publicKey))) + E.gtime(now) + E.tlv(0x30, responses)
         if let nonceExt { data += E.ctx(1, E.seq(E.seq(E.oid(OID.ocspNonce), E.octet(nonceExt)))) }
         let tbs = E.tlv(0x30, data)
         let signature = TestPKI.sign(tamper ? tbs + [0x00] : tbs, key)
@@ -279,6 +295,17 @@ struct Fixture: @unchecked Sendable {
     func bareSignature(challenge: [UInt8]) -> [UInt8] {
         Array(try! leaf.key.signature(for: SHA256.hash(data: challenge)).rawRepresentation)
     }
+}
+
+/// `der` with the first occurrence of `old` replaced by `new` (the same length, so every DER length stays valid).
+func replacingFirst(_ old: [UInt8], with new: [UInt8], in der: [UInt8]) -> [UInt8] {
+    precondition(old.count == new.count && !old.isEmpty)
+    var out = der
+    for i in 0...(der.count - old.count) where Array(der[i..<(i + old.count)]) == old {
+        out.replaceSubrange(i..<(i + old.count), with: new)
+        return out
+    }
+    preconditionFailure("pattern not found")
 }
 
 /// Answers from fixtures by URL; records every request; refuses any host that is not a `.invalid` test host.

@@ -1,6 +1,11 @@
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace EidTokenTest.Core.Verification;
 
@@ -16,8 +21,9 @@ namespace EidTokenTest.Core.Verification;
 ///  4. «OCSP» — the AUTH certificate at its AIA URL, echoed nonce REQUIRED;
 ///  5. «CRL» — the AUTH certificate at its CDP URL.
 ///
-/// Fail closed: logged in only when all five pass. <see cref="VerifyAsync"/> and <see cref="RunAsync"/> never throw:
-/// every network / IO / parsing exception becomes «шалгаж чадсангүй» or ✗.
+/// Fail closed: logged in only when all five pass. <see cref="VerifyAsync"/> and <see cref="RunAsync"/> never throw —
+/// not for bad input either (null, empty or garbage certificate, wrong-length challenge, invalid origin): every
+/// network / IO / parsing exception and every rejected input becomes a result row («шалгаж чадсангүй» or ✗).
 public sealed class LoginVerifier
 {
     private const string EcPublicKeyOid = "1.2.840.10045.2.1";
@@ -41,19 +47,30 @@ public sealed class LoginVerifier
         _now = now ?? (() => DateTimeOffset.UtcNow);
     }
 
+    internal const string UnreadableCertificate = "AUTH гэрчилгээг уншиж чадсангүй (нэг DER гэрчилгээ биш)";
+
+    /// Invalid origin → wrong-length challenge → certificate that is not one strict DER certificate:
+    /// <see cref="LoginReport.InputRejected"/> (signature ✗, the rest «шалгаж чадсангүй», no network, nothing signed);
+    /// null = go on with <paramref name="certificate"/> loaded (caller disposes). The same order on macOS.
+    private static LoginReport? RejectInput(string? origin, byte[]? challenge, byte[]? der, out X509Certificate2 certificate)
+    {
+        certificate = null!;
+        if (!Origin.IsValid(origin)) return LoginReport.InputRejected(Origin.InvalidReason);
+        if (challenge is null || !LoginChallenge.IsValidLength(challenge))
+            return LoginReport.InputRejected(LoginChallenge.LengthMessage(challenge?.Length ?? 0));
+        if (!Der.TryLoadCertificate(der, out certificate)) return LoginReport.InputRejected(UnreadableCertificate);
+        return null;
+    }
+
     /// The test apps' whole login: origin, challenge (exactly 32 bytes), certificate and key type are checked BEFORE
-    /// anything is signed; then <paramref name="signDigest"/> is called ONCE with the digest (C_Login + C_Sign on the
-    /// token). An exception from it makes the signature row «шалгаж чадсангүй» with its message; the other checks
-    /// still run.
+    /// anything is signed (the same rejection as <see cref="VerifyAsync"/>); then <paramref name="signDigest"/> is
+    /// called ONCE with the digest (C_Login + C_Sign on the token). An exception from it makes the signature row
+    /// «шалгаж чадсангүй» with its message; the other checks still run.
     public async Task<LoginReport> RunAsync(string origin, byte[] challenge, byte[] authCertificateDer,
                                             Func<byte[], CancellationToken, Task<byte[]>> signDigest,
                                             CancellationToken ct = default)
     {
-        ArgumentNullException.ThrowIfNull(signDigest);
-        if (!Origin.IsValid(origin)) return LoginReport.NotStarted(Origin.InvalidReason);
-        if (challenge is null || !LoginChallenge.IsValidLength(challenge))
-            return LoginReport.NotStarted(LoginChallenge.LengthMessage(challenge?.Length ?? 0));
-        if (!TryLoad(authCertificateDer, out var certificate)) return LoginReport.NotStarted("AUTH гэрчилгээг уншиж чадсангүй");
+        if (RejectInput(origin, challenge, authCertificateDer, out var certificate) is { } rejected) return rejected;
         using (certificate)
         {
             CheckResult signature;
@@ -66,7 +83,7 @@ public sealed class LoginVerifier
                 try
                 {
                     var raw = await signDigest(LoginChallenge.DigestToSign(origin, challenge), ct).ConfigureAwait(false);
-                    signature = SignatureCheck(certificate, origin, challenge, raw);
+                    signature = SignatureCheck(certificate, origin, challenge, raw ?? []);
                 }
                 catch (Exception ex) when (ex is not OutOfMemoryException)
                 {
@@ -78,15 +95,15 @@ public sealed class LoginVerifier
     }
 
     /// The relying party's decision from what the client sent back: <paramref name="origin"/> is the relying party's
-    /// own host name, <paramref name="challenge"/> the 32 bytes it issued; the signed digest is computed here.
+    /// own host name — a constant from its configuration, never taken from the request — and
+    /// <paramref name="challenge"/> the 32 bytes it issued; the signed digest is computed here.
     public async Task<LoginReport> VerifyAsync(string origin, byte[] challenge, byte[] signature, byte[] authCertificateDer,
                                                CancellationToken ct = default)
     {
-        if (!Origin.IsValid(origin)) return LoginReport.NotStarted(Origin.InvalidReason);
-        if (!TryLoad(authCertificateDer, out var certificate)) return LoginReport.NotStarted("AUTH гэрчилгээг уншиж чадсангүй");
+        if (RejectInput(origin, challenge, authCertificateDer, out var certificate) is { } rejected) return rejected;
         using (certificate)
         {
-            return await CheckAllAsync(certificate, SignatureCheck(certificate, origin, challenge ?? [], signature ?? []), ct)
+            return await CheckAllAsync(certificate, SignatureCheck(certificate, origin, challenge, signature ?? []), ct)
                 .ConfigureAwait(false);
         }
     }
@@ -104,7 +121,11 @@ public sealed class LoginVerifier
             var issuer = _trust.IssuerOf(certificate);
             var ocsp = await OcspAsync(certificate, issuer, nonceRequired: true, now, ct).ConfigureAwait(false);
             var crl = await CrlAsync(certificate, issuer, now, ct).ConfigureAwait(false);
-            return new LoginReport([signature, chain, validity, ocsp, crl], Der.DisplayName(certificate.SubjectName.RawData));
+            var serials = Der.AttributeValues(certificate.SubjectName.RawData, Der.SerialNumberAttribute);
+            return new LoginReport([signature, chain, validity, ocsp, crl], Der.DisplayName(certificate.SubjectName.RawData))
+            {
+                HolderSerialNumber = serials.Count == 1 ? serials[0] : null,
+            };
         }
         catch (Exception ex) when (ex is not OutOfMemoryException)
         {
@@ -113,21 +134,6 @@ public sealed class LoginVerifier
         finally
         {
             foreach (var c in chainCertificates) c.Dispose();
-        }
-    }
-
-    private static bool TryLoad(byte[]? der, out X509Certificate2 certificate)
-    {
-        certificate = null!;
-        if (der is null) return false;
-        try
-        {
-            certificate = new X509Certificate2(der);
-            return true;
-        }
-        catch (CryptographicException)
-        {
-            return false;
         }
     }
 
@@ -187,13 +193,37 @@ public sealed class LoginVerifier
         return null;
     }
 
-    /// Builds the chain against the bundled certificates only. <paramref name="cas"/> receives copies of the chain's CA
-    /// certificates, issuing CA first and root last (caller disposes). Validity is not judged here (its own check).
+    /// «Гэрчилгээний гинж» — the same decision, in the same order, as `ChainCheck.chain` on macOS:
+    ///
+    ///  1. the CA path above the AUTH certificate is taken from the bundled certificates only, starting at the PINNED
+    ///     04 (<see cref="TrustAnchors.CaPath"/>): each CA on it must be within its validity period (an expired CA fails
+    ///     HERE) and the path must reach a bundled root;
+    ///  2. X509Chain evaluates the AUTH certificate against the bundled roots only (CustomRootTrust), no downloads, no
+    ///     revocation (checks 4 and 5 and the issuing CA's own revocation below). .NET cannot keep Windows from also
+    ///     looking at intermediates in the machine's CA store, so whatever copy it picks is only accepted when
+    ///  3. element [1] of its path has the SAME subject AND the SAME public key as the pinned 04 — a byte-different copy
+    ///     of 04 in the CA store neither replaces the pinned one nor causes a refusal; time validity is judged in 1 and
+    ///     by the validity check, not by the platform (so an expired copy elsewhere cannot refuse either);
+    ///  4. the AUTH profile (<see cref="AuthProfileProblem"/>).
+    ///
+    /// <paramref name="cas"/> receives copies of the pinned path (pinned 04 DER first, root last; caller disposes) —
+    /// what the validity check and the issuing CA's revocation check use. Everything is judged at
+    /// <paramref name="now"/> clamped into the AUTH certificate's validity period, so that an expired AUTH certificate
+    /// is reported by the validity check, not here.
     internal CheckResult Chain(X509Certificate2 certificate, DateTimeOffset now, List<X509Certificate2> cas)
     {
         const string name = CheckNames.Chain;
         if (_trust.Roots.Count == 0) return CheckResult.Unknown(name, "Итгэлийн үндэс (trust anchor) апп-д алга");
-        if (_trust.IssuingCa is null) return CheckResult.Unknown(name, "Олгогч CA (04) апп-д алга");
+        if (_trust.IssuingCa is not { } pinned) return CheckResult.Unknown(name, "Олгогч CA (04) апп-д алга");
+        var notTrusted = CheckResult.Fail(name, "Итгэмжлэгдсэн үндэс хүртэл гинж баталгаажсангүй");
+
+        var from = Der.NotBefore(certificate);
+        var to = Der.NotAfter(certificate);
+        var at = now < from ? from : now > to ? to : now;
+        var path = _trust.CaPath(pinned);
+        if (path.FirstOrDefault(c => !Der.IsValidAt(c, at)) is { } expired)
+            return CheckResult.Fail(name, ExpiredCaReason(Der.DisplayName(expired.SubjectName.RawData)));
+        if (!_trust.Roots.Any(r => r.RawData.AsSpan().SequenceEqual(path[^1].RawData))) return notTrusted;
 
         using var chain = new X509Chain();
         var policy = chain.ChainPolicy;
@@ -203,21 +233,28 @@ public sealed class LoginVerifier
         policy.RevocationMode = X509RevocationMode.NoCheck;           // OCSP and CRL: below and checks 4 and 5
         policy.DisableCertificateDownloads = true;
         policy.VerificationFlags = X509VerificationFlags.IgnoreNotTimeValid | X509VerificationFlags.IgnoreNotTimeNested;
-        policy.VerificationTime = now.UtcDateTime;
+        policy.VerificationTime = at.UtcDateTime;
         policy.VerificationTimeIgnored = false;
 
         var built = chain.Build(certificate);
-        var elements = chain.ChainElements.Cast<X509ChainElement>().Select(e => e.Certificate.RawData).ToList();
-        foreach (var raw in elements.Skip(1)) cas.Add(new X509Certificate2(raw));
-
-        if (!built || cas.Count == 0 || !_trust.Roots.Any(r => r.RawData.AsSpan().SequenceEqual(cas[^1].RawData)))
-            return CheckResult.Fail(name, "Итгэмжлэгдсэн үндэс хүртэл гинж баталгаажсангүй");
-        if (!cas[0].RawData.AsSpan().SequenceEqual(_trust.IssuingCa.RawData))
+        var elements = chain.ChainElements.Cast<X509ChainElement>().Select(e => e.Certificate).ToList();
+        if (!built || elements.Count < 2 || !elements[0].RawData.AsSpan().SequenceEqual(certificate.RawData)
+            || !_trust.Roots.Any(r => r.RawData.AsSpan().SequenceEqual(elements[^1].RawData)))
+            return notTrusted;
+        if (!elements[1].SubjectName.RawData.AsSpan().SequenceEqual(pinned.SubjectName.RawData)
+            || !SubjectPublicKeyInfo(elements[1]).AsSpan().SequenceEqual(SubjectPublicKeyInfo(pinned)))
             return CheckResult.Fail(name, "Гэрчилгээг eID Mongolia Issuing CA (04) шууд олгоогүй");
+
+        foreach (var ca in path) cas.Add(X509CertificateLoader.LoadCertificate(ca.RawData));
         if (AuthProfileProblem(certificate) is { } problem) return CheckResult.Fail(name, problem);
         var names = new[] { certificate }.Concat(cas).Select(c => Der.DisplayName(c.SubjectName.RawData));
         return CheckResult.Pass(name, string.Join(" → ", names));
     }
+
+    /// «Гинжний гэрчилгээ (‹нэр›) хүчинтэй хугацаанаас гадуур» — the same text in the chain and validity rows.
+    internal static string ExpiredCaReason(string name) => "Гинжний гэрчилгээ (" + name + ") хүчинтэй хугацаанаас гадуур";
+
+    private static byte[] SubjectPublicKeyInfo(X509Certificate2 certificate) => certificate.PublicKey.ExportSubjectPublicKeyInfo();
 
     /// «Гэрчилгээний гинж» also covers the issuing CA (<paramref name="cas"/>[0]) not being revoked: the same OCSP and
     /// CRL code against ITS issuer (<paramref name="cas"/>[1]), at the URLs in the CA certificate. The OCSP nonce is
@@ -258,7 +295,7 @@ public sealed class LoginVerifier
         if (now > to) return CheckResult.Fail(name, "Гэрчилгээний хугацаа " + DisplayDate.Format(to) + "-нд дууссан");
         var ca = cas.FirstOrDefault(c => !Der.IsValidAt(c, now));
         if (ca is not null)
-            return CheckResult.Fail(name, "Гинжний гэрчилгээ (" + Der.DisplayName(ca.SubjectName.RawData) + ") хүчинтэй хугацаанаас гадуур");
+            return CheckResult.Fail(name, ExpiredCaReason(Der.DisplayName(ca.SubjectName.RawData)));
         return CheckResult.Pass(name, DisplayDate.Format(from) + " – " + DisplayDate.Format(to));
     }
 

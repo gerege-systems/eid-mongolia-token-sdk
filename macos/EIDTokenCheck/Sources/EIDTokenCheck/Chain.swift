@@ -18,8 +18,16 @@ public struct TrustStore: Sendable, Equatable {
     /// nil when the pinned issuing CA is not among `intermediates`.
     public let issuingCA: [UInt8]?
 
-    /// `issuingCA` must be one of `intermediates` (byte for byte), otherwise it is dropped.
-    public init(anchors: [[UInt8]], intermediates: [[UInt8]], issuingCA: [UInt8]?) {
+    /// The issuing CA is the intermediate whose SHA-256 is `issuingCASHA256` — the pin cannot be replaced from
+    /// outside this module.
+    public init(anchors: [[UInt8]], intermediates: [[UInt8]]) {
+        self.init(anchors: anchors, intermediates: intermediates,
+                  issuingCA: intermediates.first { Self.sha256Hex($0) == Self.issuingCASHA256 })
+    }
+
+    /// Tests only (internal): another issuing CA. It must be one of `intermediates` (byte for byte), otherwise it is
+    /// dropped.
+    init(anchors: [[UInt8]], intermediates: [[UInt8]], issuingCA: [UInt8]?) {
         let usableIntermediates = intermediates.filter { ParsedCertificate(der: $0) != nil }
         self.anchors = anchors.filter { ParsedCertificate(der: $0) != nil }
         self.intermediates = usableIntermediates
@@ -37,9 +45,7 @@ public struct TrustStore: Sendable, Equatable {
                 .sorted { $0.lastPathComponent < $1.lastPathComponent }
                 .flatMap { url in (try? Data(contentsOf: url)).map(certificates(in:)) ?? [] }
         }
-        let intermediates = read("intermediates")
-        return TrustStore(anchors: read("anchors"), intermediates: intermediates,
-                          issuingCA: intermediates.first { sha256Hex($0) == issuingCASHA256 })
+        return TrustStore(anchors: read("anchors"), intermediates: read("intermediates"))
     }
 
     public static func sha256Hex(_ der: [UInt8]) -> String {
@@ -63,25 +69,56 @@ public struct TrustStore: Sendable, Equatable {
               ca.subject == cert.issuer, cert.isSigned(by: ca) == true else { return nil }
         return ca
     }
+
+    /// The CA path from `start` upwards through THIS store only (subject = issuer name AND signature), ending at an
+    /// anchor when one is reached. Never looks at a keychain or the network.
+    func caPath(from start: ParsedCertificate) -> [ParsedCertificate] {
+        let pool = (intermediates + anchors).compactMap { ParsedCertificate(der: $0) }
+        var path = [start]
+        while let current = path.last, !anchors.contains(current.der), path.count <= pool.count {
+            guard let parent = pool.first(where: {
+                $0.subject == current.issuer && !path.contains($0) && current.isSigned(by: $0) == true
+            }) else { break }
+            path.append(parent)
+        }
+        return path
+    }
 }
 
 /// «Гэрчилгээний гинж» and «Хүчинтэй хугацаа».
 public enum ChainCheck {
-    /// Path from `leaf` to one of the store's anchors (Security.framework, basic X.509 policy, ONLY the bundled
-    /// anchors — never the system trust store — no network fetch); the path's element [1] is the pinned issuing CA
-    /// (04); and the AUTH profile (`authProfileProblem`). The issuing CA's own revocation is added by
-    /// `LoginVerifier` (it needs the network).
+    /// The same decision, in the same order, as `LoginVerifier.Chain` on Windows:
     ///
-    /// The path is evaluated at `now` clamped into the leaf's validity period so that an expired certificate is
-    /// reported by the validity check, not here. Returns the built chain (leaf first).
+    ///  1. the CA path above the AUTH certificate is taken from `trust/` only, starting at the PINNED 04: each CA on
+    ///     it must be within its validity period (an expired CA fails HERE) and the path must reach a bundled anchor;
+    ///  2. Security.framework evaluates the AUTH certificate (basic X.509 policy, ONLY the bundled anchors — never the
+    ///     system trust store — no network fetch). macOS has no way to keep it from also looking at keychain
+    ///     intermediates (`SecTrustSetKeychains` has been a no-op since 10.12), so whatever copy it picks is only
+    ///     accepted when
+    ///  3. element [1] of its path has the SAME subject AND the SAME public key as the pinned 04 — a byte-different
+    ///     copy of 04 in a keychain neither replaces the pinned one nor causes a refusal;
+    ///  4. the AUTH profile (`authProfileProblem`).
+    ///
+    /// The returned chain is the AUTH certificate followed by the pinned path (pinned 04 DER first) — what the
+    /// validity check and the issuing CA's revocation check use. The issuing CA's own revocation is added by
+    /// `LoginVerifier` (it needs the network). Everything is judged at `now` clamped into the AUTH certificate's
+    /// validity period, so that an expired AUTH certificate is reported by the validity check, not here.
     public static func chain(leaf: ParsedCertificate, trust: TrustStore,
                              now: Date) -> (result: CheckResult, chain: [ParsedCertificate]) {
         guard !trust.anchors.isEmpty else {
             return (CheckResult(.chain, .unavailable, "Итгэлийн үндэс (trust anchor) апп-д алга"), [leaf])
         }
-        guard let issuingCA = trust.issuingCA else {
+        guard let pinnedDER = trust.issuingCA, let pinned = ParsedCertificate(der: pinnedDER) else {
             return (CheckResult(.chain, .unavailable, "Олгогч CA (04) апп-д алга"), [leaf])
         }
+        let notTrusted = CheckResult(.chain, .failed, "Итгэмжлэгдсэн үндэс хүртэл гинж баталгаажсангүй")
+        let at = min(max(now, leaf.notBefore), leaf.notAfter)
+        let cas = trust.caPath(from: pinned)
+        if let ca = cas.first(where: { !$0.isValid(at: at) }) {
+            return (CheckResult(.chain, .failed, expiredCAReason(ca.subjectName?.displayName ?? "—")), [leaf])
+        }
+        guard let top = cas.last, trust.anchors.contains(top.der) else { return (notTrusted, [leaf]) }
+
         guard let leafRef = SecCertificateCreateWithData(nil, Data(leaf.der) as CFData) else {
             return (CheckResult(.chain, .failed, "AUTH гэрчилгээг уншиж чадсангүй"), [leaf])
         }
@@ -95,26 +132,28 @@ public enum ChainCheck {
               SecTrustSetNetworkFetchAllowed(secTrust, false) == errSecSuccess else {
             return (CheckResult(.chain, .unavailable, "Гинж шалгах орчныг үүсгэж чадсангүй"), [leaf])
         }
-        let at = min(max(now, leaf.notBefore), leaf.notAfter)
         SecTrustSetVerifyDate(secTrust, at as CFDate)
         var error: CFError?
         let trusted = SecTrustEvaluateWithError(secTrust, &error)
         let built = ((SecTrustCopyCertificateChain(secTrust) as? [SecCertificate]) ?? [])
             .compactMap { ParsedCertificate(der: [UInt8](SecCertificateCopyData($0) as Data)) }
-        let chain = built.isEmpty ? [leaf] : built
-        guard trusted, chain.count >= 2, chain[0].der == leaf.der, let root = chain.last,
+        guard trusted, built.count >= 2, built[0].der == leaf.der, let root = built.last,
               trust.anchors.contains(root.der) else {
-            return (CheckResult(.chain, .failed, "Итгэмжлэгдсэн үндэс хүртэл гинж баталгаажсангүй"), chain)
+            return (notTrusted, [leaf])
         }
-        guard chain[1].der == issuingCA else {
-            return (CheckResult(.chain, .failed, "Гэрчилгээг eID Mongolia Issuing CA (04) шууд олгоогүй"), chain)
+        guard built[1].subject == pinned.subject, built[1].subjectPublicKeyInfo == pinned.subjectPublicKeyInfo else {
+            return (CheckResult(.chain, .failed, "Гэрчилгээг eID Mongolia Issuing CA (04) шууд олгоогүй"), [leaf])
         }
+        let chain = [leaf] + cas
         if let problem = authProfileProblem(leaf) {
             return (CheckResult(.chain, .failed, problem), chain)
         }
         let names = chain.map { $0.subjectName?.displayName ?? "—" }
         return (CheckResult(.chain, .passed, names.joined(separator: " → ")), chain)
     }
+
+    /// «Гинжний гэрчилгээ (‹нэр›) хүчинтэй хугацаанаас гадуур» — the same text in the chain and validity rows.
+    static func expiredCAReason(_ name: String) -> String { "Гинжний гэрчилгээ (\(name)) хүчинтэй хугацаанаас гадуур" }
 
     /// The token AUTH certificate profile, identical on macOS and Windows: KeyUsage present with EXACTLY
     /// {digitalSignature}; ExtendedKeyUsage present and containing clientAuth; exactly one subject serialNumber,
@@ -141,8 +180,7 @@ public enum ChainCheck {
             return CheckResult(.validity, .failed, "Гэрчилгээний хугацаа \(DisplayDate.string(leaf.notAfter))-нд дууссан")
         }
         if let ca = chain.dropFirst().first(where: { !$0.isValid(at: now) }) {
-            return CheckResult(.validity, .failed,
-                               "Гинжний гэрчилгээ (\(ca.subjectName?.displayName ?? "—")) хүчинтэй хугацаанаас гадуур")
+            return CheckResult(.validity, .failed, expiredCAReason(ca.subjectName?.displayName ?? "—"))
         }
         return CheckResult(.validity, .passed,
                            "\(DisplayDate.string(leaf.notBefore)) – \(DisplayDate.string(leaf.notAfter))")

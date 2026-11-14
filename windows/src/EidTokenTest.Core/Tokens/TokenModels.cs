@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace EidTokenTest.Core.Tokens;
 
 /// A connected token as `C_GetTokenInfo` reports it.
@@ -7,17 +10,20 @@ public sealed record TokenSummary(ulong SlotId, string Label, string Serial, str
 /// One certificate object on the token (public: read without the PIN).
 public sealed record TokenCertificateObject(byte[] Id, string Label, byte[] Der);
 
-/// What the login flow and the command-line tool need from a token (the real one: <see cref="Pkcs11TokenReader"/>).
+/// What the login flow and the command-line tool need from a token (the real one: <see cref="Pkcs11TokenReader"/>). A
+/// token is always addressed by its serial number (C_GetTokenInfo, trimmed) and looked up again on every call — never
+/// by a slot ID remembered from an earlier call. The same on macOS.
 public interface ITokenSource
 {
     IReadOnlyList<TokenSummary> ListTokens();
 
-    IReadOnlyList<TokenCertificateObject> ReadCertificates(ulong slotId);
+    IReadOnlyList<TokenCertificateObject> ReadCertificates(string serial);
 
-    /// Exactly one C_Login (CKU_USER) in a read-only session, then C_Sign (CKM_ECDSA) over the 32-byte
-    /// <paramref name="digest"/> with the private key whose CKA_ID is <paramref name="keyId"/> → raw r‖s. No retry,
-    /// no context-specific login. Throws <see cref="TokenLoginException"/>.
-    byte[] SignDigest(ulong slotId, byte[] keyId, byte[] digest, string pin);
+    /// Exactly one C_Login (CKU_USER) in a read-only session of the token whose serial is <paramref name="serial"/>
+    /// right now, then C_Sign (CKM_ECDSA) over the 32-byte <paramref name="digest"/> with the private key whose CKA_ID
+    /// is <paramref name="keyId"/> → raw r‖s. No retry, no context-specific login. Throws
+    /// <see cref="TokenLoginException"/>.
+    byte[] SignDigest(string serial, byte[] keyId, byte[] digest, string pin);
 }
 
 /// The user PIN counter as the PKCS#11 token flags tell it (no exact count in PKCS#11).
@@ -78,6 +84,9 @@ public enum TokenLoginError
     PinLength,
     KeyNotFound,
     TokenNotFound,
+    /// C_Login answered CKR_USER_ALREADY_LOGGED_IN: some other session of this process is logged in to the token. This
+    /// reader never logs in twice, so it refuses instead of signing on a login it did not make (the same on macOS).
+    AlreadyLoggedIn,
     Pkcs11,
 }
 
@@ -117,6 +126,7 @@ public sealed class TokenLoginException : Exception
         TokenLoginError.PinLength => "PIN-ий урт буруу",
         TokenLoginError.KeyNotFound => "Токен дээр AUTH гэрчилгээтэй таарах хувийн түлхүүр алга",
         TokenLoginError.TokenNotFound => "Токен салгагдсан эсвэл олдсонгүй",
+        TokenLoginError.AlreadyLoggedIn => "Токенд өөр session нэвтэрсэн байна — энэ оролдлого гарын үсэг зурахгүй",
         _ => "Токен гарын үсэг зурж чадсангүй" + (string.IsNullOrEmpty(detail) ? string.Empty : " (" + detail + ")"),
     };
 }

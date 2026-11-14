@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 
@@ -21,10 +25,17 @@ public sealed class TrustAnchors
     /// SHA-256 of `trust/intermediates/04-eid-mongolia-issuing-ca.pem` (DER), lowercase hex.
     public const string IssuingCaSha256 = "87b8db6862abde5e4a07a10c2c696afe5cb6aea072b9f3f9755e73ce79f546fc";
 
-    /// <paramref name="issuingCa"/> must be one of <paramref name="intermediates"/> (byte for byte), otherwise it is
-    /// dropped.
-    public TrustAnchors(IEnumerable<X509Certificate2> roots, IEnumerable<X509Certificate2> intermediates,
-                        X509Certificate2? issuingCa)
+    /// The issuing CA is the intermediate whose SHA-256 is <see cref="IssuingCaSha256"/> — the pin cannot be replaced
+    /// from outside this assembly.
+    public TrustAnchors(IEnumerable<X509Certificate2> roots, IEnumerable<X509Certificate2> intermediates)
+        : this(roots, intermediates, intermediates?.FirstOrDefault(c => Sha256Hex(c) == IssuingCaSha256))
+    {
+    }
+
+    /// Tests only (internal): another issuing CA. <paramref name="issuingCa"/> must be one of
+    /// <paramref name="intermediates"/> (byte for byte), otherwise it is dropped.
+    internal TrustAnchors(IEnumerable<X509Certificate2> roots, IEnumerable<X509Certificate2> intermediates,
+                          X509Certificate2? issuingCa)
     {
         ArgumentNullException.ThrowIfNull(roots);
         ArgumentNullException.ThrowIfNull(intermediates);
@@ -45,9 +56,7 @@ public sealed class TrustAnchors
     /// issuing CA is the intermediate whose SHA-256 is <see cref="IssuingCaSha256"/>.
     public static TrustAnchors Bundled()
     {
-        var roots = Load("trust/anchors/");
-        var intermediates = Load("trust/intermediates/");
-        return new TrustAnchors(roots, intermediates, intermediates.FirstOrDefault(c => Sha256Hex(c) == IssuingCaSha256));
+        return new TrustAnchors(Load("trust/anchors/"), Load("trust/intermediates/"));
     }
 
     public static string Sha256Hex(X509Certificate2 certificate) =>
@@ -74,4 +83,21 @@ public sealed class TrustAnchors
     /// answers must come from.
     public X509Certificate2? IssuerOf(X509Certificate2 certificate) =>
         IssuingCa is not null && Der.IsSignedBy(certificate, IssuingCa) ? IssuingCa : null;
+
+    /// The CA path from <paramref name="start"/> upwards through THESE certificates only (subject = issuer name AND
+    /// signature), ending at a root when one is reached. Never looks at a Windows store or the network.
+    internal IReadOnlyList<X509Certificate2> CaPath(X509Certificate2 start)
+    {
+        var pool = Intermediates.Concat(Roots).ToList();
+        var path = new List<X509Certificate2> { start };
+        while (path.Count <= pool.Count && !Roots.Any(r => r.RawData.AsSpan().SequenceEqual(path[^1].RawData)))
+        {
+            var current = path[^1];
+            var parent = pool.FirstOrDefault(p => !path.Any(q => q.RawData.AsSpan().SequenceEqual(p.RawData))
+                                                  && Der.IsSignedBy(current, p));
+            if (parent is null) break;
+            path.Add(parent);
+        }
+        return path;
+    }
 }

@@ -1,7 +1,7 @@
 import EIDTokenCheck
-import EIDTokenReader
 import XCTest
 @testable import EIDTokenCLI
+@testable import EIDTokenReader
 
 /// A token that never touches hardware. Records every signDigest call.
 final class FakeSource: TokenSource {
@@ -59,12 +59,27 @@ final class ArgumentTests: XCTestCase {
     }
 
     func testOtherUsageErrors() {
-        for args in [[], ["--serial", "S1"], ["--module"], ["--module", "/m.so", "extra"], ["--module", "/m.so", "--bogus"],
-                     ["--module", "/m.so", "--module", "/n.so"], ["--module", "/m.so", "--origin", "https://rp.example.mn"],
-                     ["--module", "/m.so", "--origin", "RP.example.mn"], ["--module", "/m.so", "--origin", "rp.example.mn:443"],
-                     ["--module", "/m.so", "--serial"]] {
-            guard case .usage = CLIArguments.parse(args) else { return XCTFail("\(args) accepted") }
+        let cases: [([String], String)] = [
+            ([], "--module <opensc-pkcs11 зам> заавал"), (["--serial", "S1"], "--module <opensc-pkcs11 зам> заавал"),
+            (["--module"], "--module-ийн утга (модулийн зам) алга"),
+            (["--module", "/m.so", "extra"], CLIArguments.unknownArgument),
+            (["--module", "/m.so", "--bogus"], CLIArguments.unknownArgument),
+            (["--module", "/m.so", "--module", "/n.so"], "--module давхар өгөгдсөн"),
+            (["--module", "/m.so", "--origin", "https://rp.example.mn"], Origin.invalidReason),
+            (["--module", "/m.so", "--origin", "RP.example.mn"], Origin.invalidReason),
+            (["--module", "/m.so", "--origin", "rp.example.mn:443"], Origin.invalidReason),
+            (["--module", "/m.so", "--serial"], "--serial-ийн утга алга"),
+        ]
+        for (args, reason) in cases {
+            XCTAssertEqual(CLIArguments.parse(args), .usage(reason), "\(args)")
         }
+    }
+
+    /// L5: an unknown or positional argument is never printed back (it may be a PIN typed in the wrong place).
+    func testUnknownArgumentIsNotEchoed() {
+        XCTAssertEqual(CLIArguments.parse(["--module", "/m.so", "--serial", "S1", "--login", "482913"]),
+                       .usage(CLIArguments.unknownArgument))
+        XCTAssertFalse(CLIArguments.unknownArgument.contains("482913"))
     }
 }
 
@@ -77,7 +92,7 @@ final class RefusalTests: XCTestCase {
 
     private func run(_ args: [String], source: FakeSource?, pin: FakePIN = FakePIN()) async -> (Int32, Output) {
         let output = Output()
-        let verifier = LoginVerifier(trust: TrustStore(anchors: [], intermediates: [], issuingCA: nil), fetcher: NoNetwork())
+        let verifier = LoginVerifier(trust: TrustStore(anchors: [], intermediates: []), fetcher: NoNetwork())
         let cli = CLI(openSource: { path in
             guard let source else { throw TokenError.moduleLoad("PKCS#11 модуль олдсонгүй: \(path)") }
             return source
@@ -86,10 +101,34 @@ final class RefusalTests: XCTestCase {
     }
 
     func testUsageErrorsExit2() async {
-        let (noSerial, _) = await run(["--module", "/m.so", "--login"], source: FakeSource(tokens: [token()]))
+        let (noSerial, noSerialOutput) = await run(["--module", "/m.so", "--login"], source: FakeSource(tokens: [token()]))
         XCTAssertEqual(noSerial, ExitCode.usage)
-        let (pinArg, _) = await run(["--module", "/m.so", "--serial", "S1", "--login", "--pin", "1"], source: FakeSource(tokens: [token()]))
+        XCTAssertEqual(noSerialOutput.err.first, "eid-token-check: \(CLIArguments.serialRequired)")
+        let (pinArg, pinOutput) = await run(["--module", "/m.so", "--serial", "S1", "--login", "--pin", "1"],
+                                            source: FakeSource(tokens: [token()]))
         XCTAssertEqual(pinArg, ExitCode.usage)
+        XCTAssertEqual(pinOutput.err.first, "eid-token-check: \(CLIArguments.pinOnCommandLine)")
+    }
+
+    /// L5: a PIN typed as a positional argument is not printed — not on stdout, not on stderr, not in JSON.
+    func testPositionalPINIsNeverPrinted() async {
+        for json in [false, true] {
+            let source = FakeSource(tokens: [token()])
+            let args = ["--module", "/m.so", "--serial", "S1", "--login", "482913"] + (json ? ["--json"] : [])
+            let (code, output) = await run(args, source: source)
+            XCTAssertEqual(code, ExitCode.usage)
+            XCTAssertEqual(source.signCalls, 0)
+            XCTAssertFalse((output.out + output.err).joined().contains("482913"), "\(output.out) \(output.err)")
+            XCTAssertTrue((output.out + output.err).joined().contains(CLIArguments.unknownArgument))
+        }
+    }
+
+    /// B: CKR_USER_ALREADY_LOGGED_IN is a login this reader did not make — refused, the same as on Windows.
+    func testUserAlreadyLoggedInIsRefused() {
+        XCTAssertEqual(TokenError.from("C_Login", PKCS11Module.CKR_USER_ALREADY_LOGGED_IN), .alreadyLoggedIn)
+        XCTAssertEqual(TokenError.alreadyLoggedIn.errorDescription,
+                       "Токенд өөр session нэвтэрсэн байна — энэ оролдлого гарын үсэг зурахгүй")
+        XCTAssertEqual(TokenError.from("C_Login", PKCS11Module.CKR_PIN_INCORRECT), .pinIncorrect)
     }
 
     func testPINFromATerminalIsRefused() async {
@@ -98,32 +137,40 @@ final class RefusalTests: XCTestCase {
                                        pin: FakePIN(isTerminal: true))
         XCTAssertEqual(code, ExitCode.usage)
         XCTAssertEqual(source.signCalls, 0)
-        XCTAssertTrue(output.err.joined().contains("stdin"))
+        XCTAssertEqual(output.err.first, "eid-token-check: \(CLI.stdinIsTerminal)")
     }
 
     func testFinalTryAndLockedAreRefusedWithoutCLogin() async {
         for flags in [Self.flagsOK | TokenInfo.CKF_USER_PIN_FINAL_TRY, Self.flagsOK | TokenInfo.CKF_USER_PIN_LOCKED] {
             let source = FakeSource(tokens: [token(flags)])
-            let (code, _) = await run(["--module", "/m.so", "--serial", "S1", "--login"], source: source)
+            let (code, output) = await run(["--module", "/m.so", "--serial", "S1", "--login"], source: source)
             XCTAssertEqual(code, ExitCode.failed)
             XCTAssertEqual(source.signCalls, 0)
+            let expected = flags & TokenInfo.CKF_USER_PIN_LOCKED != 0
+                ? PinPolicy.message(.locked) ?? "" : CLI.finalTryRefused
+            XCTAssertEqual(output.err.first, "eid-token-check: \(expected)")
         }
     }
 
     func testEmptyStdinIsAUsageError() async {
         let source = FakeSource(tokens: [token()])
-        let (code, _) = await run(["--module", "/m.so", "--serial", "S1", "--login"], source: source, pin: FakePIN(pin: nil))
+        let (code, output) = await run(["--module", "/m.so", "--serial", "S1", "--login"], source: source, pin: FakePIN(pin: nil))
         XCTAssertEqual(code, ExitCode.usage)
         XCTAssertEqual(source.signCalls, 0)
+        XCTAssertEqual(output.err.first, "eid-token-check: \(CLI.noPIN)")
     }
 
     func testModuleErrorAndMissingTokenExit3() async {
-        let (module, _) = await run(["--module", "/missing.so"], source: nil)
+        let (module, moduleOutput) = await run(["--module", "/missing.so"], source: nil)
         XCTAssertEqual(module, ExitCode.noToken)
-        let (none, _) = await run(["--module", "/m.so"], source: FakeSource(tokens: []))
+        XCTAssertEqual(moduleOutput.err.first, "eid-token-check: PKCS#11 модуль олдсонгүй: /missing.so")
+        let (none, noneOutput) = await run(["--module", "/m.so"], source: FakeSource(tokens: []))
         XCTAssertEqual(none, ExitCode.noToken)
-        let (otherSerial, _) = await run(["--module", "/m.so", "--serial", "S9", "--login"], source: FakeSource(tokens: [token()]))
+        XCTAssertEqual(noneOutput.err.first, "eid-token-check: \(CLI.noToken)")
+        let (otherSerial, otherOutput) = await run(["--module", "/m.so", "--serial", "S9", "--login"],
+                                                   source: FakeSource(tokens: [token()]))
         XCTAssertEqual(otherSerial, ExitCode.noToken)
+        XCTAssertEqual(otherOutput.err.first, "eid-token-check: \(CLI.noToken): S9")
     }
 
     func testNoEIDCertificates() async {

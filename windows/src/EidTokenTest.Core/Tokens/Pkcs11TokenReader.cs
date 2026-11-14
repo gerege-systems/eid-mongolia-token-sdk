@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using Net.Pkcs11Interop.Common;
@@ -15,6 +19,8 @@ namespace EidTokenTest.Core.Tokens;
 ///  - nothing is created, changed or deleted on the token (no C_CreateObject / C_SetAttributeValue /
 ///    C_DestroyObject / C_GenerateKeyPair / C_InitToken / C_InitPIN / C_SetPIN anywhere in this class).
 ///
+/// A token is always addressed by its serial number and looked up again (C_GetSlotList + C_GetTokenInfo) on every call —
+/// never by a slot ID remembered from an earlier call: a token swapped in the same slot is refused before C_Login.
 /// All calls are serialised; call them off the UI thread.
 public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
 {
@@ -69,22 +75,22 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
     }
 
     /// The PIN flags right now (re-read before every login).
-    public PinState ReadPinState(ulong slotId)
+    public PinState ReadPinState(string serial)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            return PinStateOf(FindSlot(slotId).GetTokenInfo());
+            return PinStateOf(FindSlot(serial).GetTokenInfo());
         }
     }
 
     /// Every CKO_CERTIFICATE object (CKA_ID, CKA_LABEL, CKA_VALUE) — read-only session, no login.
-    public IReadOnlyList<TokenCertificateObject> ReadCertificates(ulong slotId)
+    public IReadOnlyList<TokenCertificateObject> ReadCertificates(string serial)
     {
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            using var session = FindSlot(slotId).OpenSession(SessionType.ReadOnly);
+            using var session = FindSlot(serial).OpenSession(SessionType.ReadOnly);
             var handles = session.FindAllObjects(new List<IObjectAttribute>
             {
                 session.Factories.ObjectAttributeFactory.Create(CKA.CKA_CLASS, CKO.CKO_CERTIFICATE),
@@ -103,12 +109,13 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
         }
     }
 
-    /// C_Login(CKU_USER) once in a read-only session, then C_Sign with CKM_ECDSA over the 32-byte
-    /// <paramref name="digest"/> using the private key whose CKA_ID is <paramref name="keyId"/>; C_Logout.
-    /// Exactly one C_Login per call: no context-specific login, no retry. Returns raw r‖s. Throws
-    /// <see cref="TokenLoginException"/>.
-    public byte[] SignDigest(ulong slotId, byte[] keyId, byte[] digest, string pin)
+    /// C_Login(CKU_USER) once in a read-only session of the token whose serial is <paramref name="serial"/> right now,
+    /// then C_Sign with CKM_ECDSA over the 32-byte <paramref name="digest"/> using the private key whose CKA_ID is
+    /// <paramref name="keyId"/>; C_Logout. Exactly one C_Login per call: no context-specific login, no retry. Returns
+    /// raw r‖s. Throws <see cref="TokenLoginException"/>.
+    public byte[] SignDigest(string serial, byte[] keyId, byte[] digest, string pin)
     {
+        ArgumentNullException.ThrowIfNull(serial);
         ArgumentNullException.ThrowIfNull(keyId);
         ArgumentNullException.ThrowIfNull(digest);
         ArgumentNullException.ThrowIfNull(pin);
@@ -119,7 +126,7 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
             ISlot slot;
             try
             {
-                slot = FindSlot(slotId);
+                slot = FindSlot(serial);
             }
             catch (Pkcs11Exception)
             {
@@ -128,9 +135,14 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
             var pinBytes = Encoding.UTF8.GetBytes(pin);
             try
             {
+                var info = slot.GetTokenInfo();
+                // The token in that slot must still be the one asked for: swapped meanwhile → refused before C_Login.
+                if (!IsSameToken(info.SerialNumber, serial)) throw new TokenLoginException(TokenLoginError.TokenNotFound);
                 // Never spend a try on a locked token (the UI checks too; the flags may have changed since).
-                if (PinStateOf(slot.GetTokenInfo()) == PinState.Locked) throw new TokenLoginException(TokenLoginError.PinLocked);
+                if (PinStateOf(info) == PinState.Locked) throw new TokenLoginException(TokenLoginError.PinLocked);
                 using var session = slot.OpenSession(SessionType.ReadOnly);
+                // Only our own C_Login counts: CKR_USER_ALREADY_LOGGED_IN (a login this call did not make — the session
+                // is fresh) is refused by MapError, the same as on macOS.
                 session.Login(CKU.CKU_USER, pinBytes);
                 try
                 {
@@ -150,15 +162,7 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
             }
             catch (Pkcs11Exception ex)
             {
-                throw ex.RV switch
-                {
-                    CKR.CKR_PIN_INCORRECT => new TokenLoginException(TokenLoginError.PinIncorrect),
-                    CKR.CKR_PIN_LOCKED => new TokenLoginException(TokenLoginError.PinLocked),
-                    CKR.CKR_PIN_LEN_RANGE => new TokenLoginException(TokenLoginError.PinLength),
-                    CKR.CKR_TOKEN_NOT_PRESENT or CKR.CKR_DEVICE_REMOVED or CKR.CKR_SLOT_ID_INVALID
-                        => new TokenLoginException(TokenLoginError.TokenNotFound),
-                    _ => new TokenLoginException(TokenLoginError.Pkcs11, ex.RV.ToString()),
-                };
+                throw MapError(ex.RV);
             }
             finally
             {
@@ -167,9 +171,47 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
         }
     }
 
-    private ISlot FindSlot(ulong slotId) =>
-        _library.GetSlotList(SlotsType.WithTokenPresent).FirstOrDefault(s => s.SlotId == slotId)
+    /// A PKCS#11 return value from C_Login / C_Sign as the one-line reason (the same texts as on macOS).
+    internal static TokenLoginException MapError(CKR rv) => rv switch
+    {
+        CKR.CKR_PIN_INCORRECT => new TokenLoginException(TokenLoginError.PinIncorrect),
+        CKR.CKR_PIN_LOCKED => new TokenLoginException(TokenLoginError.PinLocked),
+        CKR.CKR_PIN_LEN_RANGE => new TokenLoginException(TokenLoginError.PinLength),
+        CKR.CKR_USER_ALREADY_LOGGED_IN => new TokenLoginException(TokenLoginError.AlreadyLoggedIn),
+        CKR.CKR_TOKEN_NOT_PRESENT or CKR.CKR_DEVICE_REMOVED or CKR.CKR_SLOT_ID_INVALID
+            => new TokenLoginException(TokenLoginError.TokenNotFound),
+        _ => new TokenLoginException(TokenLoginError.Pkcs11, rv.ToString()),
+    };
+
+    /// The slot that holds the token <paramref name="serial"/> right now.
+    private ISlot FindSlot(string serial) =>
+        SlotWithSerial(_library.GetSlotList(SlotsType.WithTokenPresent), s => s.GetTokenInfo().SerialNumber, serial)
         ?? throw new Pkcs11Exception("C_GetSlotList", CKR.CKR_TOKEN_NOT_PRESENT);
+
+    /// The first slot whose token reports <paramref name="serial"/> (trimmed) now; a slot whose token cannot be read
+    /// (removed meanwhile) is skipped. Never "the slot it was in before".
+    internal static TSlot? SlotWithSerial<TSlot>(IEnumerable<TSlot> slots, Func<TSlot, string?> serialOf, string serial)
+        where TSlot : class
+    {
+        foreach (var slot in slots)
+        {
+            string? reported;
+            try
+            {
+                reported = serialOf(slot);
+            }
+            catch (Pkcs11Exception)
+            {
+                continue;
+            }
+            if (IsSameToken(reported, serial)) return slot;
+        }
+        return null;
+    }
+
+    /// The serial C_GetTokenInfo reports (blank-padded) is <paramref name="serial"/>.
+    internal static bool IsSameToken(string? reported, string serial) =>
+        serial.Length > 0 && Clean(reported) == serial;
 
     private static PinState PinStateOf(ITokenInfo info)
     {
