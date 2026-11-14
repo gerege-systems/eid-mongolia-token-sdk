@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <!-- eid-token-check.exe: the command-line check — the same reader, login flow and verifier as the app
-       (EidTokenTest.Core). Published self-contained for win-x64 by CI (`dotnet publish -r win-x64 --self-contained`);
+       (EidTokenTest.Core). Published self-contained for win-x64 by CI (dotnet publish, runtime win-x64, self-contained);
        opensc-pkcs11.dll and its licences are copied next to the exe. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
