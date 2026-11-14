@@ -1,0 +1,150 @@
+# release — run by hand (workflow_dispatch) from `main` with the tag to release; there is no tag trigger, so the
+# workflow file on main always applies. Builds both platforms with the SAME reusable workflows as ci.yml (unit tests
+# included) at the tagged commit, ONLY on GitHub-hosted runners (macos-15, windows-latest, ubuntu-24.04 — no runner
+# variables here), and attaches to the GitHub Release of the tag:
+#
+#   eid-token-test-macos.zip, eid-token-test-windows-x64.zip, SHA256SUMS (the two SHA-256 are also in the release text)
+#
+# Guards: dispatched from refs/heads/main; the tag already exists and its commit is on main (ancestor of origin/main);
+# the build jobs check out that exact commit; right before the release is created and again before the files are
+# uploaded the tag is resolved on the remote and must still point at the commit that was built. Never overwrites: a
+# release that already has files fails the run. Nothing is published unless both platforms built. Nothing here creates
+# a tag. Not signed. No secrets besides the job token.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag on main to build and release (v…)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      ref: ${{ steps.check.outputs.ref }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: check
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          [ "$REF" = refs/heads/main ] || { echo "::error::run the release from refs/heads/main (got $REF)"; exit 1; }
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::not a release tag: $TAG"; exit 1 ;; esac
+          commit="$(git rev-parse --verify "refs/tags/$TAG^{commit}")" || { echo "::error::tag $TAG does not exist"; exit 1; }
+          git rev-parse --verify refs/remotes/origin/main >/dev/null
+          if ! git merge-base --is-ancestor "$commit" refs/remotes/origin/main; then
+            echo "::error::$TAG ($commit) is not on main"; exit 1
+          fi
+          echo "$TAG -> $commit (on main)"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "ref=$commit" >> "$GITHUB_OUTPUT"
+
+  macos:
+    needs: guard
+    uses: ./.github/workflows/token-sdk-macos.yml
+    with:
+      ref: ${{ needs.guard.outputs.ref }}
+      release: true
+
+  windows:
+    needs: guard
+    uses: ./.github/workflows/token-sdk-windows.yml
+    with:
+      ref: ${{ needs.guard.outputs.ref }}
+      release: true
+
+  publish:
+    if: always()
+    needs: [guard, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: guard and both platforms passed
+        shell: bash
+        env:
+          GUARD: ${{ needs.guard.result }}
+          MACOS: ${{ needs.macos.result }}
+          WINDOWS: ${{ needs.windows.result }}
+        run: |
+          echo "guard=$GUARD macos=$MACOS windows=$WINDOWS"
+          [ "$GUARD" = success ] && [ "$MACOS" = success ] && [ "$WINDOWS" = success ]
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: eid-token-test-macos
+          path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: eid-token-test-windows-x64
+          path: dist
+      - name: SHA256SUMS
+        shell: bash
+        working-directory: dist
+        run: |
+          set -eu
+          test -f eid-token-test-macos.zip
+          test -f eid-token-test-windows-x64.zip
+          sha256sum eid-token-test-macos.zip eid-token-test-windows-x64.zip > SHA256SUMS
+          cat SHA256SUMS
+      - name: GitHub Release
+        shell: bash
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.guard.outputs.tag }}
+          BUILT: ${{ needs.guard.outputs.ref }}
+        run: |
+          set -eu
+          # The commit the tag points at on the remote right now (annotated tags peeled).
+          tag_still_built() {
+            local type sha
+            read -r type sha < <(gh api "repos/$REPO/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')
+            if [ "$type" = tag ]; then sha="$(gh api "repos/$REPO/git/tags/$sha" --jq '.object.sha')"; fi
+            if [ "$sha" != "$BUILT" ]; then
+              echo "::error::tag $TAG now points at $sha, not at the built commit $BUILT — nothing published"; exit 1
+            fi
+          }
+          files=(eid-token-test-macos.zip eid-token-test-windows-x64.zip SHA256SUMS)
+          {
+            echo "eID Mongolia token SDK $TAG ($BUILT) — macOS and Windows test apps, eid-token-check, OpenSC PKCS#11 module."
+            echo
+            echo "SHA-256 (also in SHA256SUMS):"
+            echo
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+            echo
+            echo "The checksums show that a download is complete and unchanged against this page; they do not prove who built the files (the builds are not code-signed). See README.md."
+          } > notes.md
+          if gh release view "$TAG" -R "$REPO" >/dev/null 2>&1; then
+            count="$(gh release view "$TAG" -R "$REPO" --json assets --jq '.assets | length')"
+            if [ "$count" != 0 ]; then
+              echo "::error::release $TAG already has $count file(s) — nothing is overwritten"; exit 1
+            fi
+          else
+            tag_still_built
+            gh release create "$TAG" -R "$REPO" --verify-tag --draft --title "$TAG" --notes-file notes.md
+          fi
+          tag_still_built
+          gh release upload "$TAG" "${files[@]}" -R "$REPO"
+          gh release edit "$TAG" -R "$REPO" --notes-file notes.md --draft=false

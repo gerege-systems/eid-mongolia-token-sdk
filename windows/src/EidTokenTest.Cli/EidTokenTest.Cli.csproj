@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- eid-token-check.exe: the command-line check — the same reader, login flow and verifier as the app
+       (EidTokenTest.Core). Published self-contained for win-x64 by CI (dotnet publish, runtime win-x64, self-contained);
+       opensc-pkcs11.dll and its licences are copied next to the exe. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>EidTokenTest.Cli</RootNamespace>
+    <AssemblyName>eid-token-check</AssemblyName>
+    <Version>0.2.0</Version>
+    <!-- No debug symbols from NuGet packages in the published folder (the package check forbids *.pdb). -->
+    <CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EidTokenTest.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="..\..\third_party\opensc\x64\opensc-pkcs11.dll" Link="opensc-pkcs11.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\third_party\opensc\COPYING;..\..\third_party\opensc\OPENSSL-LICENSE.txt" Link="%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EidTokenTest.Core\EidTokenTest.Core.csproj" />
+  </ItemGroup>
+
+</Project>

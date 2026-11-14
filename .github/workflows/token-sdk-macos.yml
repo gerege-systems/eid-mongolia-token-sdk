@@ -1,0 +1,245 @@
+# token-sdk-macos: «eID Token Test» for macOS and the `eid-token-check` command-line tool.
+#
+#   unit tests — macos/EIDTokenCheck `swift test` (fixtures generated in the tests; no network, no token)
+#   build      — xcodegen → Release app, ad-hoc signed (not notarized), OpenSC PKCS#11 module only;
+#                `swift build` → eid-token-check (universal)
+#   artifact   — eid-token-test-macos.zip:
+#                  eID Token Test.app
+#                  eid-token-check/{eid-token-check, opensc-pkcs11.so, libopensc.12.dylib, trust/}
+#                  README.md, LICENSE, trust/, licenses/{OpenSC-COPYING-LGPL-2.1.txt, OpenSSL-LICENSE.txt}
+#
+# Reusable: called by ci.yml (every pull request, behind the `gate` check) and release.yml (manual release from
+# main) — one set of build steps for both. `ref` = what to check out (empty: the triggering commit).
+#
+# release: true  — runs ONLY on the GitHub-hosted image `macos-15` (never on a self-hosted runner) and uses nothing
+#                  pre-existing: OpenSC 0.26.1 + OpenSSL are built from their SHA-256-pinned source tarballs
+#                  (macos/scripts/build_opensc.sh), XcodeGen is downloaded and checked against the SHA-256 below, and
+#                  every build folder is new for the run. Release artifacts come only from this path.
+# release: false — pull request builds on `vars.EID_MACOS_RUNNER` (JSON label set; the callers run this job only when
+#                  it is set, so an unset variable is a skipped job, which `gate` treats as a FAILURE). A self-hosted
+#                  runner shared by every job of one OS user is NOT a trust boundary: the CI cache under
+#                  ~/ci-cache/eid-mongolia-token-sdk/<event> is checked on every use (XcodeGen archive against the
+#                  SHA-256 below, OpenSC outputs against the manifest written when they were built) — that detects
+#                  accidental corruption only, not a hostile job. Nothing from these builds is released.
+name: token-sdk-macos
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        default: ''
+      release:
+        type: boolean
+        default: false
+      artifact-name:
+        type: string
+        default: eid-token-test-macos
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    runs-on: ${{ inputs.release && 'macos-15' || fromJSON(vars.EID_MACOS_RUNNER || '["macos-15"]') }}
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+        working-directory: macos
+    env:
+      GIT_CONFIG_NOSYSTEM: '1'
+      XCODEGEN_VERSION: 2.45.4
+      XCODEGEN_SHA256: 090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+          clean: true
+      - name: environment
+        working-directory: .
+        env:
+          RELEASE: ${{ inputs.release }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/" >> "$GITHUB_ENV"
+          if [ "$RELEASE" = true ]; then
+            work="$RUNNER_TEMP/release-build-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            rm -rf "$work"
+            mkdir -p "$work"
+            echo "CI_CACHE=$work" >> "$GITHUB_ENV"
+            echo "FRESH=true" >> "$GITHUB_ENV"
+            echo "release build: no cache, fresh folder $work"
+          else
+            case "$EVENT" in
+              pull_request|push|workflow_dispatch) ;;
+              *) echo "::error::unexpected event '$EVENT' for the CI cache"; exit 1 ;;
+            esac
+            echo "CI_CACHE=$HOME/ci-cache/eid-mongolia-token-sdk/$EVENT" >> "$GITHUB_ENV"
+            echo "FRESH=false" >> "$GITHUB_ENV"
+            echo "CI build: cache folder for '$EVENT' runs"
+          fi
+          sw_vers
+          xcodebuild -version
+      # The from-source OpenSC / OpenSSL build needs the usual build tools; on the GitHub-hosted image the missing ones
+      # are installed from Homebrew (release path only — the self-hosted runner brings its own).
+      - name: build tools (release)
+        if: ${{ inputs.release }}
+        run: |
+          missing=()
+          for tool in autoconf automake libtool pkg-config; do
+            command -v "$tool" >/dev/null 2>&1 || command -v "g$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "installing: ${missing[*]}"
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install "${missing[@]}"
+          fi
+          for tool in autoconf automake pkg-config perl make clang; do printf '%s: ' "$tool"; command -v "$tool"; done
+          brew list --versions autoconf automake libtool pkg-config pkgconf 2>/dev/null || true
+      # Keyed by the build script: a changed recipe builds a new tree. The manifest is written right after the build
+      # and checked on every later use (detects accidental corruption of the cache, nothing more).
+      - name: OpenSC 0.26.1
+        run: |
+          key="$(shasum -a 256 scripts/build_opensc.sh | cut -c1-16)"
+          dir="$CI_CACHE/opensc/$key"
+          tree="$dir/opensc-0.26.1"
+          manifest="$dir/outputs.sha256"
+          files=(lib/opensc-pkcs11.so lib/libopensc.12.dylib share/doc/opensc/COPYING share/doc/opensc/OPENSSL-LICENSE.txt)
+          if [ "$FRESH" != true ] && [ -f "$manifest" ]; then
+            if ! (cd "$tree" && shasum -a 256 -c "$manifest"); then
+              echo "::error::the cached OpenSC build in $dir does not match its manifest — remove that folder on the runner"
+              exit 1
+            fi
+          else
+            rm -rf "$dir"
+            mkdir -p "$dir"
+            bash scripts/build_opensc.sh "$tree"
+            (cd "$tree" && shasum -a 256 "${files[@]}") > "$manifest"
+          fi
+          cat "$manifest"
+          echo "OPENSC_PREFIX=$tree" >> "$GITHUB_ENV"
+      # The archive is checked against the pinned SHA-256 on every use; the binary is unpacked fresh for this run.
+      - name: xcodegen
+        run: |
+          archive="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION.zip"
+          if [ ! -f "$archive" ]; then
+            mkdir -p "$(dirname "$archive")"
+            curl -fsSL -o "$archive" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+          fi
+          echo "$XCODEGEN_SHA256  $archive" | shasum -a 256 -c
+          d="$RUNNER_TEMP/xcodegen-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          rm -rf "$d"
+          unzip -q "$archive" -d "$d"
+          "$d/xcodegen/bin/xcodegen" generate
+      - name: unit tests (EIDTokenCheck, EIDTokenCLI)
+        working-directory: macos/EIDTokenCheck
+        run: swift test --parallel --scratch-path "$CI_CACHE/token-sdk-check-build"
+      - name: build app (Release, ad-hoc)
+        run: |
+          xcodebuild -project EIDTokenTest.xcodeproj -scheme EIDTokenTest -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$CI_CACHE/DerivedData-token-sdk" \
+            -clonedSourcePackagesDirPath "$CI_CACHE/SourcePackages" \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build 2>&1 | tee "$RUNNER_TEMP/build.log" | grep -E "(error|warning: .*deprecated)|\*\* BUILD" || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/build.log" || {
+            echo "::error::xcodebuild build failed"; grep -E "error:" "$RUNNER_TEMP/build.log" | head -40; tail -n 60 "$RUNNER_TEMP/build.log"; exit 1; }
+      # The bundle must hold the module and nothing of a provisioning toolset.
+      - name: check the app bundle
+        run: |
+          app="$CI_CACHE/DerivedData-token-sdk/Build/Products/Release/eID Token Test.app"
+          test -f "$app/Contents/Frameworks/opensc-pkcs11.so"
+          test -f "$app/Contents/Frameworks/libopensc.12.dylib"
+          test -d "$app/Contents/Resources/trust/anchors"
+          test -d "$app/Contents/Resources/trust/intermediates"
+          test ! -e "$app/Contents/Helpers"
+          test ! -e "$app/Contents/Resources/OpenSC/profiles"
+          if find "$app" \( -name 'pkcs15-init' -o -name 'pkcs15-tool' -o -name 'pkcs11-tool' -o -name '*label*' -o -name '*.profile' \) | grep -q .; then
+            echo "::error::provisioning tools/profiles found in the bundle"; exit 1
+          fi
+          codesign --verify --deep --strict "$app"
+          lipo -info "$app/Contents/Frameworks/opensc-pkcs11.so"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+      # The built app starts on this runner, stays up and renders its main window: "main page loaded" in its log,
+      # written from the window's onAppear — the same marker as on Windows. Rendering needs a logged-in GUI (Aqua)
+      # session; a runner installed as a launchd daemon (session "System") cannot show any window — there only "starts
+      # and stays up for 15 s" is checked and a warning says so. The app is stopped by its own PID.
+      - name: launch check (app)
+        run: |
+          log="$RUNNER_TEMP/eid-token-test-launch.log"
+          out="$RUNNER_TEMP/eid-token-test-launch.out"
+          rm -f "$log" "$out"
+          session="$(launchctl managername 2>/dev/null || echo unknown)"
+          echo "launchd session: $session"
+          EID_TOKEN_TEST_LOG="$log" "$APP_PATH/Contents/MacOS/eID Token Test" >"$out" 2>&1 &
+          pid=$!
+          echo "app PID $pid"
+          ok=true
+          if [ "$session" = Aqua ]; then
+            for _ in $(seq 1 60); do
+              grep -q 'main page loaded' "$log" 2>/dev/null && break
+              kill -0 "$pid" 2>/dev/null || break
+              sleep 1
+            done
+            grep -q 'main page loaded' "$log" 2>/dev/null || { echo "::error::no 'main page loaded' within 60 s"; ok=false; }
+          else
+            echo "::warning::runner session is '$session', not a GUI (Aqua) session: no window can be shown here, so only start + stay up is checked (the 'main page loaded' marker needs a runner in a logged-in GUI session)"
+            sleep 15
+          fi
+          kill -0 "$pid" 2>/dev/null || { echo "::error::the app exited"; ok=false; }
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          echo "--- log"; cat "$log" 2>/dev/null || true
+          echo "--- stdout/stderr"; tail -n 40 "$out" 2>/dev/null || true
+          $ok
+      - name: build eid-token-check (Release, universal)
+        working-directory: macos/EIDTokenCheck
+        run: |
+          args=(-c release --product eid-token-check --arch arm64 --arch x86_64 --scratch-path "$CI_CACHE/token-sdk-cli-build")
+          swift build "${args[@]}"
+          bin="$(swift build "${args[@]}" --show-bin-path)/eid-token-check"
+          cli="$RUNNER_TEMP/eid-token-check"
+          rm -rf "$cli"
+          mkdir -p "$cli"
+          install -m 0755 "$bin" "$cli/eid-token-check"
+          ditto "$APP_PATH/Contents/Frameworks/opensc-pkcs11.so" "$cli/opensc-pkcs11.so"
+          ditto "$APP_PATH/Contents/Frameworks/libopensc.12.dylib" "$cli/libopensc.12.dylib"
+          ditto ../../trust "$cli/trust"
+          codesign --force --sign - "$cli/eid-token-check"
+          lipo -info "$cli/eid-token-check"
+          echo "CLI_DIR=$cli" >> "$GITHUB_ENV"
+      # No token is touched: help, a usage error (exit 2) and a module that does not exist (exit 3).
+      - name: smoke test eid-token-check
+        run: |
+          "$CLI_DIR/eid-token-check" --help
+          set +e
+          "$CLI_DIR/eid-token-check" --module "$CLI_DIR/opensc-pkcs11.so" --login --json; usage=$?
+          "$CLI_DIR/eid-token-check" --module "$RUNNER_TEMP/missing.so" --json; missing=$?
+          set -e
+          echo "usage=$usage missing=$missing"
+          [ "$usage" = 2 ] && [ "$missing" = 3 ]
+      - name: zip
+        run: |
+          stage="$RUNNER_TEMP/eid-token-test-macos"
+          rm -rf "$stage" "$RUNNER_TEMP/eid-token-test-macos.zip"
+          mkdir -p "$stage/licenses"
+          ditto "$APP_PATH" "$stage/eID Token Test.app"
+          ditto "$CLI_DIR" "$stage/eid-token-check"
+          cp ../README.md "$stage/README.md"
+          cp ../LICENSE "$stage/LICENSE"
+          ditto ../trust "$stage/trust"
+          cp "$OPENSC_PREFIX/share/doc/opensc/COPYING" "$stage/licenses/OpenSC-COPYING-LGPL-2.1.txt"
+          cp "$OPENSC_PREFIX/share/doc/opensc/OPENSSL-LICENSE.txt" "$stage/licenses/OpenSSL-LICENSE.txt"
+          (cd "$RUNNER_TEMP" && ditto -c -k --keepParent eid-token-test-macos eid-token-test-macos.zip)
+          unzip -l "$RUNNER_TEMP/eid-token-test-macos.zip" | grep -E 'eid-token-check/(eid-token-check|opensc-pkcs11.so|libopensc.12.dylib)$'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/eid-token-test-macos.zip
+          if-no-files-found: error
+          retention-days: 14
+      # Tidy: the release build folder is removed (the GitHub-hosted VM is discarded after the job anyway).
+      - name: remove the release build folder
+        if: ${{ always() && inputs.release }}
+        run: rm -rf "$CI_CACHE"

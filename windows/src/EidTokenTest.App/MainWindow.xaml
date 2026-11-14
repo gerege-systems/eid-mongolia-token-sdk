@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Window
+    x:Class="EidTokenTest.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:local="using:EidTokenTest.App"
+    Title="eID Token Test">
+
+    <Grid x:Name="RootGrid" Background="{ThemeResource EidSurfaceBrush}" Loaded="OnRootLoaded">
+        <ScrollViewer>
+            <StackPanel Padding="{StaticResource PagePadding}" MaxWidth="880">
+                <TextBlock Text="eID Token Test" Style="{StaticResource PageTitleTextBlock}" />
+                <TextBlock Margin="0,4,0,16" Style="{StaticResource SubtleSubtitleTextBlock}"
+                           Text="Токены мэдээлэл ба нэвтрэлтийг шалгана. Токен дээр юу ч бичихгүй." />
+
+                <!-- Токен -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel Spacing="12">
+                        <Grid>
+                            <TextBlock Text="Токен" Style="{StaticResource SectionTitleTextBlock}" VerticalAlignment="Center" />
+                            <Button x:Name="ReloadButton" Content="Дахин унших" HorizontalAlignment="Right" Click="OnReloadClick" />
+                        </Grid>
+                        <StackPanel x:Name="TokenLoading" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                            <ProgressRing IsActive="True" Width="16" Height="16" />
+                            <TextBlock Text="Уншиж байна…" Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        </StackPanel>
+                        <TextBlock x:Name="TokenEmpty" Text="Токен олдсонгүй" Visibility="Collapsed"
+                                   Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        <TextBlock x:Name="TokenError" Visibility="Collapsed" Foreground="{ThemeResource EidDangerBrush}" />
+                        <ListView x:Name="TokenList" SelectionMode="Single" Visibility="Collapsed"
+                                  SelectionChanged="OnTokenSelectionChanged">
+                            <ListView.ItemTemplate>
+                                <DataTemplate x:DataType="local:TokenRow">
+                                    <StackPanel Padding="0,8" Spacing="2">
+                                        <TextBlock Text="{x:Bind Label}" FontWeight="SemiBold" Foreground="{ThemeResource EidTextForeground}" />
+                                        <TextBlock Text="{x:Bind Details}" Style="{StaticResource LabelTextBlock}" IsTextSelectionEnabled="True" />
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ListView.ItemTemplate>
+                        </ListView>
+                    </StackPanel>
+                </Border>
+
+                <!-- Гэрчилгээ -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Гэрчилгээ" Style="{StaticResource SectionTitleTextBlock}" />
+                        <TextBlock x:Name="CertHint" Text="Токен сонгоно уу." Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        <StackPanel x:Name="CertLoading" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                            <ProgressRing IsActive="True" Width="16" Height="16" />
+                            <TextBlock Text="Уншиж байна…" Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        </StackPanel>
+                        <TextBlock x:Name="CertEmpty" Text="eID гэрчилгээ олдсонгүй" Visibility="Collapsed"
+                                   Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        <TextBlock x:Name="CertError" Visibility="Collapsed" Foreground="{ThemeResource EidDangerBrush}" />
+                        <ItemsControl x:Name="CertList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:CertRow">
+                                    <Border BorderBrush="{ThemeResource EidCardStroke}" BorderThickness="0,1,0,0" Padding="0,12,0,4">
+                                        <Grid ColumnSpacing="16" RowSpacing="4">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="170" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <TextBlock Grid.Row="0" Grid.ColumnSpan="2" Text="{x:Bind Kind}" FontWeight="SemiBold"
+                                                       Foreground="{ThemeResource EidAccentBrush}" />
+                                            <TextBlock Grid.Row="1" Text="Эзэмшигч" Style="{StaticResource LabelTextBlock}" />
+                                            <TextBlock Grid.Row="1" Grid.Column="1" Text="{x:Bind Subject}" IsTextSelectionEnabled="True" />
+                                            <TextBlock Grid.Row="2" Text="serialNumber" Style="{StaticResource LabelTextBlock}" />
+                                            <TextBlock Grid.Row="2" Grid.Column="1" Text="{x:Bind SubjectSerial}" IsTextSelectionEnabled="True" />
+                                            <TextBlock Grid.Row="3" Text="Олгогч" Style="{StaticResource LabelTextBlock}" />
+                                            <TextBlock Grid.Row="3" Grid.Column="1" Text="{x:Bind Issuer}" IsTextSelectionEnabled="True" />
+                                            <TextBlock Grid.Row="4" Text="Серийн дугаар (hex)" Style="{StaticResource LabelTextBlock}" />
+                                            <TextBlock Grid.Row="4" Grid.Column="1" Text="{x:Bind Serial}" FontFamily="Consolas" IsTextSelectionEnabled="True" />
+                                            <TextBlock Grid.Row="5" Text="Хүчинтэй" Style="{StaticResource LabelTextBlock}" />
+                                            <TextBlock Grid.Row="5" Grid.Column="1" Text="{x:Bind Validity}" />
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+                </Border>
+
+                <!-- Нэвтрэх тест -->
+                <Border Style="{StaticResource CardBorder}">
+                    <StackPanel Spacing="12">
+                        <TextBlock Text="Нэвтрэх тест" Style="{StaticResource SectionTitleTextBlock}" />
+                        <TextBlock Style="{StaticResource SubtleSubtitleTextBlock}"
+                                   Text="PIN-ийг зөвхөн нэвтрэх (AUTH) түлхүүрээр 32 байт санамсаргүй challenge-д (origin-той холбож) гарын үсэг зурахад нэг удаа ашиглана. Хадгалахгүй." />
+                        <TextBox x:Name="OriginBox" Header="Origin (танай системийн host нэр)" Text="test.example"
+                                 Width="320" HorizontalAlignment="Left" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <PasswordBox x:Name="PinBox" PlaceholderText="PIN" Width="220" KeyDown="OnPinKeyDown" />
+                            <Button x:Name="LoginButton" Content="Нэвтрэх" IsEnabled="False" Click="OnLoginClick" />
+                        </StackPanel>
+                        <TextBlock x:Name="PinStateText" Visibility="Collapsed" Foreground="{ThemeResource EidWarningBrush}" />
+                        <StackPanel x:Name="LoginProgress" Orientation="Horizontal" Spacing="8" Visibility="Collapsed">
+                            <ProgressRing IsActive="True" Width="16" Height="16" />
+                            <TextBlock Text="Шалгаж байна…" Style="{StaticResource SubtleSubtitleTextBlock}" />
+                        </StackPanel>
+                        <ItemsControl x:Name="CheckList">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="local:CheckRow">
+                                    <Grid ColumnSpacing="16" Padding="0,6">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="200" />
+                                            <ColumnDefinition Width="130" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{x:Bind Name}" Foreground="{ThemeResource EidTextForeground}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind Mark}" FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource EidSuccessBrush}" Visibility="{x:Bind IsPass}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind Mark}" FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource EidDangerBrush}" Visibility="{x:Bind IsFail}" />
+                                        <TextBlock Grid.Column="1" Text="{x:Bind Mark}" FontWeight="SemiBold"
+                                                   Foreground="{ThemeResource EidWarningBrush}" Visibility="{x:Bind IsUnknown}" />
+                                        <TextBlock Grid.Column="2" Text="{x:Bind Reason}" Style="{StaticResource LabelTextBlock}"
+                                                   IsTextSelectionEnabled="True" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock x:Name="SummaryOk" Visibility="Collapsed" FontWeight="SemiBold"
+                                   Foreground="{ThemeResource EidSuccessBrush}" IsTextSelectionEnabled="True" />
+                        <TextBlock x:Name="SummaryFail" Visibility="Collapsed" FontWeight="SemiBold"
+                                   Foreground="{ThemeResource EidDangerBrush}" IsTextSelectionEnabled="True" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Window>

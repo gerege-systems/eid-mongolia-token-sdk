@@ -1,0 +1,77 @@
+name: EIDTokenTest
+options:
+  bundleIdPrefix: mn.eidmongolia
+  deploymentTarget:
+    macOS: "14.0"
+  xcodeVersion: "16.0"
+
+packages:
+  # The verifier (EIDTokenCheck) and the read-only PKCS#11 reader + login flow (EIDTokenReader), unit-tested with
+  # `swift test` in EIDTokenCheck/. The command-line tool `eid-token-check` is built from the same package.
+  EIDTokenCheck:
+    path: EIDTokenCheck
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # Ad-hoc signed (not notarized). With a Developer ID identity, turn ENABLE_HARDENED_RUNTIME on — bundle_opensc.sh
+    # signs the module with the same identity, so library validation passes without any extra entitlement.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+  configs:
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-Owholemodule"
+
+targets:
+  EIDTokenTest:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+      # Trust anchors + intermediates (public certificates) → Contents/Resources/trust/{anchors,intermediates}.
+      - path: ../trust
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - package: EIDTokenCheck
+        product: EIDTokenCheck
+      - package: EIDTokenCheck
+        product: EIDTokenReader
+    settings:
+      base:
+        PRODUCT_NAME: "eID Token Test"
+        PRODUCT_BUNDLE_IDENTIFIER: mn.eidmongolia.tokentest
+        INFOPLIST_FILE: Info.plist
+        # Not sandboxed, not a Mac App Store target. An ad-hoc app under the hardened runtime could not load the
+        # ad-hoc signed module (library validation needs a Team ID) — see the comment above.
+        ENABLE_HARDENED_RUNTIME: NO
+        COMBINE_HIDPI_IMAGES: true
+        # bundle_opensc.sh reads the OpenSC tree outside the project's declared inputs.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+    postBuildScripts:
+      # READ-ONLY bundle: Contents/Frameworks/opensc-pkcs11.so + libopensc.12.dylib and the licence texts only.
+      # Input tree: OPENSC_PREFIX, else macos/.opensc/opensc-0.26.1 (scripts/build_opensc.sh).
+      - name: Bundle OpenSC (PKCS#11 module only)
+        script: bash "$SRCROOT/scripts/bundle_opensc.sh"
+        basedOnDependencyAnalysis: false
+    info:
+      path: Info.plist
+      properties:
+        CFBundleDisplayName: eID Token Test
+        CFBundleName: eID Token Test
+        CFBundleShortVersionString: "0.2.0"
+        CFBundleVersion: "1"
+        LSMinimumSystemVersion: "14.0"
+        LSApplicationCategoryType: public.app-category.developer-tools
+        NSHumanReadableCopyright: "Copyright © 2026 Gerege Systems LLC. MIT License."
+        # The eID certificates' OCSP / CRL URLs (AIA / CDP) are plain http; responses are signature-checked against
+        # the issuing CA, so http is only transport.
+        NSAppTransportSecurity:
+          NSExceptionDomains:
+            crl.eidmongolia.mn:
+              NSExceptionAllowsInsecureHTTPLoads: true
+            ocsp.eidmongolia.mn:
+              NSExceptionAllowsInsecureHTTPLoads: true

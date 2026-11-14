@@ -1,0 +1,71 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- «eID Token Test»: one window, WinUI 3, unpackaged and self-contained (.NET + Windows App SDK runtimes inside the
+       folder) so it runs from an unzipped folder without installing anything. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>EidTokenTest.App</RootNamespace>
+    <AssemblyName>eid-token-test</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <Version>0.2.0</Version>
+    <!-- No debug symbols from NuGet packages in the published folder (the package check forbids *.pdb). -->
+    <CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
+  </PropertyGroup>
+
+  <!-- The OpenSC 0.26.1 PKCS#11 module (third_party/opensc), copied into opensc\ next to the exe with its licences.
+       Only the module: it needs nothing but Windows system DLLs. No OpenSC tools, no profiles. -->
+  <ItemGroup>
+    <Content Include="..\..\third_party\opensc\x64\opensc-pkcs11.dll" Link="opensc\opensc-pkcs11.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\third_party\opensc\COPYING;..\..\third_party\opensc\OPENSSL-LICENSE.txt" Link="opensc\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EidTokenTest.Core\EidTokenTest.Core.csproj" />
+  </ItemGroup>
+
+  <!-- An unpackaged WinUI 3 app loads its XAML through MRT Core: the compiled XAML (*.xbf) and the PRI index (*.pri)
+       must sit next to the exe. `dotnet publish` of an unpackaged (WindowsPackageType=None) self-contained app does
+       not reliably carry them from the build output into the publish folder — the window then opens with an empty
+       content area and no error. Copy every *.pri / *.xbf of the build output explicitly, and make sure MRT Core
+       finds the app's PRI under the name it looks for first (resources.pri). CI checks the result (static check +
+       UI smoke test). -->
+  <Target Name="EidCopyXamlResourcesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_EidXamlResource Include="$(OutDir)**\*.pri;$(OutDir)**\*.xbf" Exclude="$(OutDir)publish\**;$(PublishDir)**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_EidXamlResource)" DestinationFiles="@(_EidXamlResource->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy Condition="!Exists('$(PublishDir)resources.pri') And Exists('$(OutDir)$(TargetName).pri')"
+          SourceFiles="$(OutDir)$(TargetName).pri" DestinationFiles="$(PublishDir)resources.pri" />
+    <Copy Condition="!Exists('$(PublishDir)resources.pri') And !Exists('$(OutDir)$(TargetName).pri') And Exists('$(OutDir)$(MSBuildProjectName).pri')"
+          SourceFiles="$(OutDir)$(MSBuildProjectName).pri" DestinationFiles="$(PublishDir)resources.pri" />
+    <Message Importance="high" Text="XAML resources copied to publish: @(_EidXamlResource->'%(RecursiveDir)%(Filename)%(Extension)', ', ')" />
+  </Target>
+
+</Project>
