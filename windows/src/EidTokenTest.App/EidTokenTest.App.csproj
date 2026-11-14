@@ -47,4 +47,23 @@
     <ProjectReference Include="..\EidTokenTest.Core\EidTokenTest.Core.csproj" />
   </ItemGroup>
 
+  <!-- An unpackaged WinUI 3 app loads its XAML through MRT Core: the compiled XAML (*.xbf) and the PRI index (*.pri)
+       must sit next to the exe. `dotnet publish` of an unpackaged (WindowsPackageType=None) self-contained app does
+       not reliably carry them from the build output into the publish folder — the window then opens with an empty
+       content area and no error. Copy every *.pri / *.xbf of the build output explicitly, and make sure MRT Core
+       finds the app's PRI under the name it looks for first (resources.pri). CI checks the result (static check +
+       UI smoke test). -->
+  <Target Name="EidCopyXamlResourcesToPublish" AfterTargets="Publish">
+    <ItemGroup>
+      <_EidXamlResource Include="$(OutDir)**\*.pri;$(OutDir)**\*.xbf" Exclude="$(OutDir)publish\**;$(PublishDir)**" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_EidXamlResource)" DestinationFiles="@(_EidXamlResource->'$(PublishDir)%(RecursiveDir)%(Filename)%(Extension)')"
+          SkipUnchangedFiles="true" />
+    <Copy Condition="!Exists('$(PublishDir)resources.pri') And Exists('$(OutDir)$(TargetName).pri')"
+          SourceFiles="$(OutDir)$(TargetName).pri" DestinationFiles="$(PublishDir)resources.pri" />
+    <Copy Condition="!Exists('$(PublishDir)resources.pri') And !Exists('$(OutDir)$(TargetName).pri') And Exists('$(OutDir)$(MSBuildProjectName).pri')"
+          SourceFiles="$(OutDir)$(MSBuildProjectName).pri" DestinationFiles="$(PublishDir)resources.pri" />
+    <Message Importance="high" Text="XAML resources copied to publish: @(_EidXamlResource->'%(RecursiveDir)%(Filename)%(Extension)', ', ')" />
+  </Target>
+
 </Project>

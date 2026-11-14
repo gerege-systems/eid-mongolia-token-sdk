@@ -34,7 +34,36 @@ struct ContentView: View {
         }
         .background(Color.eidSurface)
         .frame(minWidth: 640, minHeight: 640)
+        .onAppear { StartupLog.write(StartupLog.mainPageLoaded) }
         .task { await model.refresh() }
+    }
+}
+
+/// Startup marker, the same as on Windows: one line «main page loaded» when the main window's content appears — the CI
+/// launch check waits for it. Written to stderr and to `EID_TOKEN_TEST_LOG` (default `~/Library/Logs/eid-token-test.log`).
+/// Only startup events — never a PIN or certificate content.
+enum StartupLog {
+    static let mainPageLoaded = "main page loaded"
+
+    static var path: URL {
+        if let configured = ProcessInfo.processInfo.environment["EID_TOKEN_TEST_LOG"], !configured.isEmpty {
+            return URL(fileURLWithPath: configured)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Logs/eid-token-test.log")
+    }
+
+    static func write(_ message: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let line = Data("\(stamp) \(message)\n".utf8)
+        FileHandle.standardError.write(line)
+        if let handle = try? FileHandle(forWritingTo: path) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: line)
+        } else {
+            try? line.write(to: path)
+        }
     }
 }
 

@@ -100,6 +100,29 @@ jobs:
           codesign --verify --deep --strict "$app"
           lipo -info "$app/Contents/Frameworks/opensc-pkcs11.so"
           echo "APP_PATH=$app" >> "$GITHUB_ENV"
+      # The built app starts on this runner, stays up and renders its main window ("main page loaded" in its log,
+      # written from the window's onAppear — the same marker as on Windows). Stopped by its own PID.
+      - name: launch check (app)
+        run: |
+          log="$RUNNER_TEMP/eid-token-test-launch.log"
+          out="$RUNNER_TEMP/eid-token-test-launch.out"
+          rm -f "$log" "$out"
+          EID_TOKEN_TEST_LOG="$log" "$APP_PATH/Contents/MacOS/eID Token Test" >"$out" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 60); do
+            grep -q 'main page loaded' "$log" 2>/dev/null && break
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 1
+          done
+          ok=true
+          grep -q 'main page loaded' "$log" 2>/dev/null || { echo "::error::no 'main page loaded' within 60 s"; ok=false; }
+          sleep 3
+          kill -0 "$pid" 2>/dev/null || { echo "::error::the app exited"; ok=false; }
+          kill "$pid" 2>/dev/null || true
+          wait "$pid" 2>/dev/null || true
+          echo "--- log"; cat "$log" 2>/dev/null || true
+          echo "--- stdout/stderr"; tail -n 40 "$out" 2>/dev/null || true
+          $ok
       - name: build eid-token-check (Release, universal)
         working-directory: macos/EIDTokenCheck
         run: |

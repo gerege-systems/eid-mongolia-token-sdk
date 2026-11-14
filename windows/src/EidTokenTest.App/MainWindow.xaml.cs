@@ -41,6 +41,14 @@ public sealed partial class MainWindow : Window
         _ = ReloadAsync();
     }
 
+    /// The main page's content is loaded and laid out: the marker the CI smoke test waits for (StartupLog).
+    private void OnRootLoaded(object sender, RoutedEventArgs e)
+    {
+        RootGrid.Loaded -= OnRootLoaded;
+        StartupLog.Write(StartupLog.MainPageLoaded + " (" + RootGrid.ActualWidth.ToString("0", System.Globalization.CultureInfo.InvariantCulture)
+                         + "x" + RootGrid.ActualHeight.ToString("0", System.Globalization.CultureInfo.InvariantCulture) + ")");
+    }
+
     private void OnReloadClick(object sender, RoutedEventArgs e) => _ = ReloadAsync();
 
     private async Task ReloadAsync()

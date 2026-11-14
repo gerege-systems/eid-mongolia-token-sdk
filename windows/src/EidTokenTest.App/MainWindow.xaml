@@ -6,7 +6,7 @@
     xmlns:local="using:EidTokenTest.App"
     Title="eID Token Test">
 
-    <Grid Background="{ThemeResource EidSurfaceBrush}">
+    <Grid x:Name="RootGrid" Background="{ThemeResource EidSurfaceBrush}" Loaded="OnRootLoaded">
         <ScrollViewer>
             <StackPanel Padding="{StaticResource PagePadding}" MaxWidth="880">
                 <TextBlock Text="eID Token Test" Style="{StaticResource PageTitleTextBlock}" />
