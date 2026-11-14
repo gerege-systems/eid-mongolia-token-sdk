@@ -1,0 +1,102 @@
+# token-sdk-windows: «eID Token Test» for Windows and `eid-token-check.exe`.
+#
+#   unit tests — windows/tests/EidTokenTest.Tests (fixtures generated in the tests; no network, no token)
+#   publish    — the WinUI 3 app (self-contained, x64) and the command-line tool (self-contained, win-x64)
+#   artifact   — eid-token-test-windows-x64:
+#                  eid-token-test.exe + .NET / Windows App SDK runtime, opensc\{opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
+#                  eid-token-check\{eid-token-check.exe + .NET runtime, opensc-pkcs11.dll, COPYING, OPENSSL-LICENSE.txt}
+#                  README.md, README-windows.md, trust\
+#
+# Runner: `vars.EID_WINDOWS_RUNNER` (JSON); unset → GitHub-hosted "windows-latest". SDK pinned by windows/global.json.
+# Not signed. No secrets.
+name: token-sdk-windows
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-sdk-windows-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: ${{ fromJSON(vars.EID_WINDOWS_RUNNER || '"windows-latest"') }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: powershell
+        working-directory: windows
+    env:
+      # windows/third_party/opensc/README.md (OpenSC 0.26.1 x64 release DLL).
+      OPENSC_PKCS11_SHA256: 6C1EB3705A477FBEC73CF007B6F868C77CB8A58B902FAB9F6D884570C9C4E68E
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: windows/global.json
+      - run: dotnet --version
+      - name: unit tests
+        run: |
+          dotnet test tests/EidTokenTest.Tests/EidTokenTest.Tests.csproj -c Release --logger "trx;LogFileName=tests.trx" --logger "console;verbosity=normal"
+          if ($LASTEXITCODE -ne 0) { throw "dotnet test failed (exit $LASTEXITCODE)" }
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: token-sdk-windows-test-results
+          path: windows/tests/**/TestResults/*.trx
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: publish app (self-contained, x64)
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
+          if (Test-Path $out) { Remove-Item $out -Recurse -Force }
+          dotnet publish src/EidTokenTest.App/EidTokenTest.App.csproj -c Release -p:Platform=x64 -o $out
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish (app) failed (exit $LASTEXITCODE)" }
+      - name: publish eid-token-check (self-contained, win-x64)
+        run: |
+          $cli = Join-Path $env:RUNNER_TEMP 'eid-token-test\eid-token-check'
+          dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x64 --self-contained true -o $cli
+          if ($LASTEXITCODE -ne 0) { throw "dotnet publish (cli) failed (exit $LASTEXITCODE)" }
+      # No token is touched: help, a usage error (exit 2) and a module that does not exist (exit 3).
+      - name: smoke test eid-token-check
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'eid-token-test\eid-token-check\eid-token-check.exe'
+          & $exe --help | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw "--help exit $LASTEXITCODE" }
+          & $exe --module (Join-Path (Split-Path $exe) 'opensc-pkcs11.dll') --login --json | Out-Host
+          if ($LASTEXITCODE -ne 2) { throw "usage error: exit $LASTEXITCODE (2 expected)" }
+          & $exe --module (Join-Path $env:RUNNER_TEMP 'missing.dll') --json | Out-Host
+          if ($LASTEXITCODE -ne 3) { throw "missing module: exit $LASTEXITCODE (3 expected)" }
+          $global:LASTEXITCODE = 0
+      - name: check the package
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
+          foreach ($f in 'eid-token-test.exe', 'opensc\opensc-pkcs11.dll', 'opensc\COPYING', 'opensc\OPENSSL-LICENSE.txt',
+                         'eid-token-check\eid-token-check.exe', 'eid-token-check\opensc-pkcs11.dll', 'eid-token-check\COPYING',
+                         'eid-token-check\OPENSSL-LICENSE.txt') {
+            if (-not (Test-Path (Join-Path $out $f))) { throw "missing in package: $f" }
+          }
+          # READ-ONLY: no tool that writes to a token, no OpenSC profile.
+          $forbidden = Get-ChildItem $out -Recurse -File | Where-Object { $_.Name -in @('pkcs15-init.exe', 'pkcs15-tool.exe', 'pkcs11-tool.exe', 'opensc.dll') -or $_.Name -like '*label*.exe' -or $_.Extension -eq '.profile' }
+          if ($forbidden) { throw ("forbidden files in package: " + ($forbidden.FullName -join ', ')) }
+          foreach ($dll in 'opensc\opensc-pkcs11.dll', 'eid-token-check\opensc-pkcs11.dll') {
+            $hash = (Get-FileHash (Join-Path $out $dll) -Algorithm SHA256).Hash
+            if ($hash -ne $env:OPENSC_PKCS11_SHA256) { throw "$dll SHA-256 mismatch: $hash" }
+          }
+          Copy-Item ..\README.md (Join-Path $out 'README.md')
+          Copy-Item README.md (Join-Path $out 'README-windows.md')
+          Copy-Item ..\trust (Join-Path $out 'trust') -Recurse
+          Get-ChildItem $out -File | Select-Object Name, Length | Format-Table -AutoSize
+          Get-ChildItem (Join-Path $out 'eid-token-check') -File -Filter 'eid-token-check*' | Select-Object Name, Length | Format-Table -AutoSize
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eid-token-test-windows-x64
+          path: ${{ runner.temp }}/eid-token-test/
+          if-no-files-found: error
+          retention-days: 30
