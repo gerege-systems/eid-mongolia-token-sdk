@@ -62,10 +62,10 @@ public sealed record CertificateView(CertificateKind Kind, string KeyIdHex, stri
         try
         {
             using var cert = new X509Certificate2(obj.Der);
-            var serials = Der.AttributeValues(cert.SubjectName.RawData, Der.SerialNumberAttribute);
-            return new CertificateView(kind, idHex, Der.DisplayName(cert.SubjectName.RawData),
-                serials.Count > 0 ? serials[0] : null, Der.DisplayName(cert.IssuerName.RawData), Der.SerialHex(cert),
-                Der.NotBefore(cert), Der.NotAfter(cert), obj.Id, obj.Der);
+            var serials = Verification.Der.AttributeValues(cert.SubjectName.RawData, Verification.Der.SerialNumberAttribute);
+            return new CertificateView(kind, idHex, Verification.Der.DisplayName(cert.SubjectName.RawData),
+                serials.Count > 0 ? serials[0] : null, Verification.Der.DisplayName(cert.IssuerName.RawData), Verification.Der.SerialHex(cert),
+                Verification.Der.NotBefore(cert), Verification.Der.NotAfter(cert), obj.Id, obj.Der);
         }
         catch (CryptographicException)
         {

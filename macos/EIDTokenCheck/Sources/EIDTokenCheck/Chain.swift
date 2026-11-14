@@ -20,9 +20,10 @@ public struct TrustStore: Sendable, Equatable {
 
     /// `issuingCA` must be one of `intermediates` (byte for byte), otherwise it is dropped.
     public init(anchors: [[UInt8]], intermediates: [[UInt8]], issuingCA: [UInt8]?) {
+        let usableIntermediates = intermediates.filter { ParsedCertificate(der: $0) != nil }
         self.anchors = anchors.filter { ParsedCertificate(der: $0) != nil }
-        self.intermediates = intermediates.filter { ParsedCertificate(der: $0) != nil }
-        self.issuingCA = issuingCA.flatMap { ca in self.intermediates.contains(ca) ? ca : nil }
+        self.intermediates = usableIntermediates
+        self.issuingCA = issuingCA.flatMap { ca in usableIntermediates.contains(ca) ? ca : nil }
     }
 
     /// `<directory>/anchors/*` and `<directory>/intermediates/*` (.pem, .cer, .crt, .der); the issuing CA is the
