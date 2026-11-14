@@ -1,0 +1,144 @@
+# token-sdk-macos: «eID Token Test» for macOS and the `eid-token-check` command-line tool.
+#
+#   unit tests — macos/EIDTokenCheck `swift test` (fixtures generated in the tests; no network, no token)
+#   build      — xcodegen → Release app, ad-hoc signed (not notarized), OpenSC PKCS#11 module only;
+#                `swift build` → eid-token-check (universal)
+#   artifact   — eid-token-test-macos.zip:
+#                  eID Token Test.app
+#                  eid-token-check/{eid-token-check, opensc-pkcs11.so, libopensc.12.dylib, trust/}
+#                  README.md, trust/, licenses/{OpenSC-COPYING-LGPL-2.1.txt, OpenSSL-LICENSE.txt}
+#
+# Runner: `vars.EID_MACOS_RUNNER` (JSON label set); unset → the job is skipped. OpenSC 0.26.1 is built with
+# macos/scripts/build_opensc.sh once per script version and cached under $CI_CACHE.
+name: token-sdk-macos
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: token-sdk-macos-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    if: vars.EID_MACOS_RUNNER != ''
+    runs-on: ${{ fromJSON(vars.EID_MACOS_RUNNER || '["macos-15"]') }}
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: macos
+    env:
+      XCODEGEN_VERSION: 2.45.4
+      XCODEGEN_SHA256: 090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: environment
+        working-directory: .
+        run: |
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/gitconfig" >> "$GITHUB_ENV"
+          echo "TMPDIR=$RUNNER_TEMP/" >> "$GITHUB_ENV"
+          echo "CI_CACHE=$HOME/ci-cache/eid-mongolia-token-sdk" >> "$GITHUB_ENV"
+          sw_vers
+          xcodebuild -version
+      # Keyed by the build script: a changed recipe builds a new tree.
+      - name: OpenSC 0.26.1 (cache)
+        run: |
+          key="$(shasum -a 256 scripts/build_opensc.sh | cut -c1-16)"
+          tree="$CI_CACHE/opensc/$key/opensc-0.26.1"
+          if [ ! -f "$tree/lib/opensc-pkcs11.so" ] || [ ! -f "$tree/share/doc/opensc/COPYING" ]; then
+            rm -rf "$CI_CACHE/opensc/$key"
+            mkdir -p "$CI_CACHE/opensc/$key"
+            bash scripts/build_opensc.sh "$tree"
+          fi
+          echo "OPENSC_PREFIX=$tree" >> "$GITHUB_ENV"
+      - name: xcodegen
+        run: |
+          bin="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION/xcodegen/bin/xcodegen"
+          if [ ! -x "$bin" ]; then
+            d="$CI_CACHE/tools/xcodegen-$XCODEGEN_VERSION"
+            mkdir -p "$d"
+            curl -fsSL -o "$RUNNER_TEMP/xcodegen.zip" "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+            echo "$XCODEGEN_SHA256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c
+            unzip -q -o "$RUNNER_TEMP/xcodegen.zip" -d "$d"
+          fi
+          "$bin" generate
+      - name: unit tests (EIDTokenCheck, EIDTokenCLI)
+        working-directory: macos/EIDTokenCheck
+        run: swift test --parallel --scratch-path "$CI_CACHE/token-sdk-check-build"
+      - name: build app (Release, ad-hoc)
+        run: |
+          xcodebuild -project EIDTokenTest.xcodeproj -scheme EIDTokenTest -configuration Release \
+            -destination 'generic/platform=macOS' \
+            -derivedDataPath "$CI_CACHE/DerivedData-token-sdk" \
+            -clonedSourcePackagesDirPath "$CI_CACHE/SourcePackages" \
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build 2>&1 | tee "$RUNNER_TEMP/build.log" | grep -E "(error|warning: .*deprecated)|\*\* BUILD" || true
+          grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/build.log" || {
+            echo "::error::xcodebuild build failed"; grep -E "error:" "$RUNNER_TEMP/build.log" | head -40; tail -n 60 "$RUNNER_TEMP/build.log"; exit 1; }
+      # The bundle must hold the module and nothing of a provisioning toolset.
+      - name: check the app bundle
+        run: |
+          app="$CI_CACHE/DerivedData-token-sdk/Build/Products/Release/eID Token Test.app"
+          test -f "$app/Contents/Frameworks/opensc-pkcs11.so"
+          test -f "$app/Contents/Frameworks/libopensc.12.dylib"
+          test -d "$app/Contents/Resources/trust/anchors"
+          test -d "$app/Contents/Resources/trust/intermediates"
+          test ! -e "$app/Contents/Helpers"
+          test ! -e "$app/Contents/Resources/OpenSC/profiles"
+          if find "$app" \( -name 'pkcs15-init' -o -name 'pkcs15-tool' -o -name 'pkcs11-tool' -o -name '*label*' -o -name '*.profile' \) | grep -q .; then
+            echo "::error::provisioning tools/profiles found in the bundle"; exit 1
+          fi
+          codesign --verify --deep --strict "$app"
+          lipo -info "$app/Contents/Frameworks/opensc-pkcs11.so"
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+      - name: build eid-token-check (Release, universal)
+        working-directory: macos/EIDTokenCheck
+        run: |
+          args=(-c release --product eid-token-check --arch arm64 --arch x86_64 --scratch-path "$CI_CACHE/token-sdk-cli-build")
+          swift build "${args[@]}"
+          bin="$(swift build "${args[@]}" --show-bin-path)/eid-token-check"
+          cli="$RUNNER_TEMP/eid-token-check"
+          rm -rf "$cli"
+          mkdir -p "$cli"
+          install -m 0755 "$bin" "$cli/eid-token-check"
+          ditto "$APP_PATH/Contents/Frameworks/opensc-pkcs11.so" "$cli/opensc-pkcs11.so"
+          ditto "$APP_PATH/Contents/Frameworks/libopensc.12.dylib" "$cli/libopensc.12.dylib"
+          ditto ../../trust "$cli/trust"
+          codesign --force --sign - "$cli/eid-token-check"
+          lipo -info "$cli/eid-token-check"
+          echo "CLI_DIR=$cli" >> "$GITHUB_ENV"
+      # No token is touched: help, a usage error (exit 2) and a module that does not exist (exit 3).
+      - name: smoke test eid-token-check
+        run: |
+          "$CLI_DIR/eid-token-check" --help
+          set +e
+          "$CLI_DIR/eid-token-check" --module "$CLI_DIR/opensc-pkcs11.so" --login --json; usage=$?
+          "$CLI_DIR/eid-token-check" --module "$RUNNER_TEMP/missing.so" --json; missing=$?
+          set -e
+          echo "usage=$usage missing=$missing"
+          [ "$usage" = 2 ] && [ "$missing" = 3 ]
+      - name: zip
+        run: |
+          stage="$RUNNER_TEMP/eid-token-test-macos"
+          rm -rf "$stage" "$RUNNER_TEMP/eid-token-test-macos.zip"
+          mkdir -p "$stage/licenses"
+          ditto "$APP_PATH" "$stage/eID Token Test.app"
+          ditto "$CLI_DIR" "$stage/eid-token-check"
+          cp ../README.md "$stage/README.md"
+          ditto ../trust "$stage/trust"
+          cp "$OPENSC_PREFIX/share/doc/opensc/COPYING" "$stage/licenses/OpenSC-COPYING-LGPL-2.1.txt"
+          cp "$OPENSC_PREFIX/share/doc/opensc/OPENSSL-LICENSE.txt" "$stage/licenses/OpenSSL-LICENSE.txt"
+          (cd "$RUNNER_TEMP" && ditto -c -k --keepParent eid-token-test-macos eid-token-test-macos.zip)
+          unzip -l "$RUNNER_TEMP/eid-token-test-macos.zip" | grep -E 'eid-token-check/(eid-token-check|opensc-pkcs11.so|libopensc.12.dylib)$'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: eid-token-test-macos
+          path: ${{ runner.temp }}/eid-token-test-macos.zip
+          if-no-files-found: error
+          retention-days: 14

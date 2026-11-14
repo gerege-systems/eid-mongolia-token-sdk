@@ -1,0 +1,50 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- «eID Token Test»: one window, WinUI 3, unpackaged and self-contained (.NET + Windows App SDK runtimes inside the
+       folder) so it runs from an unzipped folder without installing anything. -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>EidTokenTest.App</RootNamespace>
+    <AssemblyName>eid-token-test</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WinUISDKReferences>false</WinUISDKReferences>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <Version>0.2.0</Version>
+  </PropertyGroup>
+
+  <!-- The OpenSC 0.26.1 PKCS#11 module (third_party/opensc), copied into opensc\ next to the exe with its licences.
+       Only the module: it needs nothing but Windows system DLLs. No OpenSC tools, no profiles. -->
+  <ItemGroup>
+    <Content Include="..\..\third_party\opensc\x64\opensc-pkcs11.dll" Link="opensc\opensc-pkcs11.dll">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="..\..\third_party\opensc\COPYING;..\..\third_party\opensc\OPENSSL-LICENSE.txt" Link="opensc\%(Filename)%(Extension)">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Manifest Include="$(ApplicationManifest)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" />
+    <PackageReference Include="Microsoft.WindowsAppSDK" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EidTokenTest.Core\EidTokenTest.Core.csproj" />
+  </ItemGroup>
+
+</Project>

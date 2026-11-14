@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- UI-free part of the eID Token Test, shared by the app and the command-line tool:
+         Verification/ — the verifier (challenge signature, chain, validity, OCSP, CRL); .NET base library only, no
+                         package and no reference to Tokens/ — copy the folder into your own code as it is;
+         Tokens/       — READ-ONLY PKCS#11 access (Pkcs11Interop) and the login flow. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>EidTokenTest.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="EidTokenTest.Tests" />
+  </ItemGroup>
+
+  <!-- Trust certificates: the public eID chain from the repository's trust/ folder, embedded (never installed into a
+       Windows certificate store). Root or intermediate is decided by the folder. -->
+  <ItemGroup>
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\..\trust\anchors\*.pem"
+                      LogicalName="trust/anchors/%(Filename)%(Extension)" Link="Trust\anchors\%(Filename)%(Extension)" />
+    <EmbeddedResource Include="$(MSBuildThisFileDirectory)..\..\..\trust\intermediates\*.pem"
+                      LogicalName="trust/intermediates/%(Filename)%(Extension)" Link="Trust\intermediates\%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Pkcs11Interop" />
+  </ItemGroup>
+
+</Project>
