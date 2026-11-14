@@ -1,10 +1,10 @@
-# UI smoke test of the PUBLISHED «eID Token Test» (CI, Windows PowerShell 5.1, needs an interactive desktop):
+# UI smoke test of the PUBLISHED "eID Token Test" (CI, Windows PowerShell 5.1, needs an interactive desktop):
 #
 #   1. copy the published folder to a clean folder and start eid-token-test.exe from there;
 #   2. wait for the main window and for the "main page loaded" line in eid-token-test.log (written by the app after the
 #      first layout of its main page);
-#   3. UI Automation: the section headings «Токен», «Гэрчилгээ», «Нэвтрэх тест», the «Дахин унших» button, and the
-#      empty state «Токен олдсонгүй» (no token on a CI machine) must be there;
+#   3. UI Automation: the three section headings (token / certificates / login test), the reload button and the
+#      empty state "no token found" (no token on a CI machine) must be there;
 #   4. on failure: a screenshot, the UI Automation tree, the app log and stderr go to -OutDir.
 #
 # The process is always stopped by its own PID. Non-ASCII texts are written as \u escapes so the file reads the same
@@ -20,11 +20,11 @@ Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes, System.Windows.For
 
 function U([string] $escaped) { [regex]::Unescape($escaped) }
 $expected = @(
-    (U 'Токен'),                                                  # Токен
-    (U 'Гэрчилгээ'),                          # Гэрчилгээ
-    (U 'Нэвтрэх тест'),              # Нэвтрэх тест
-    (U 'Дахин унших'),                    # Дахин унших
-    (U 'Токен олдсонгүй') # Токен олдсонгүй
+    (U '\u0422\u043e\u043a\u0435\u043d'),  # section heading 1
+    (U '\u0413\u044d\u0440\u0447\u0438\u043b\u0433\u044d\u044d'),  # section heading 2
+    (U '\u041d\u044d\u0432\u0442\u0440\u044d\u0445 \u0442\u0435\u0441\u0442'),  # section heading 3
+    (U '\u0414\u0430\u0445\u0438\u043d \u0443\u043d\u0448\u0438\u0445'),  # reload button
+    (U '\u0422\u043e\u043a\u0435\u043d \u043e\u043b\u0434\u0441\u043e\u043d\u0433\u04af\u0439')  # empty state: no token
 )
 $marker = 'main page loaded'
 
