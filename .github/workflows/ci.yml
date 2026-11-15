@@ -2,7 +2,8 @@
 #
 #   changelog — the PR adds a changelog.d/<YYYY-MM-DD>-<topic>.md fragment and does not touch CHANGELOG.md
 #               (CHANGELOG.md is assembled on main only; concurrent PRs would conflict on it)
-#   macos     — token-sdk-macos.yml (unit tests, app, eid-token-check, zip); runs only when vars.EID_MACOS_RUNNER is set
+#   macos     — token-sdk-macos.yml (unit tests, app, eid-token-check, zip). vars.EID_MACOS_RUNNER unset (the default
+#               for this public repo) → the release build path on GitHub-hosted macos-15; set → that runner
 #   windows   — token-sdk-windows.yml (unit tests, app, eid-token-check.exe, zip)
 #   verifier-linux — the .NET unit tests (verifier, reader policies, command-line tool) on Linux (GitHub-hosted
 #               ubuntu-24.04): the C# verifier is the one recommended for servers, so it is tested where servers run
@@ -10,7 +11,7 @@
 #               runs it (release: true → GitHub-hosted macos-15, OpenSC/OpenSSL/XcodeGen from pinned sources); the zip is
 #               uploaded as a run artifact only. Not part of the gate and never on pull requests.
 #   gate      — the single required check. It needs all four and passes ONLY when each of them succeeded:
-#               a failed, cancelled or SKIPPED platform job (e.g. EID_MACOS_RUNNER unset) fails the gate. The platform
+#               a failed, cancelled or SKIPPED platform job fails the gate. The platform
 #               jobs are not path-filtered, so "not triggered" cannot happen; on workflow_dispatch (no PR) the changelog
 #               job is skipped by design and that one skip is accepted.
 #
@@ -60,8 +61,9 @@ jobs:
           echo "$added"
 
   macos:
-    if: vars.EID_MACOS_RUNNER != ''
     uses: ./.github/workflows/token-sdk-macos.yml
+    with:
+      release: ${{ vars.EID_MACOS_RUNNER == '' }}
 
   windows:
     uses: ./.github/workflows/token-sdk-windows.yml
@@ -108,7 +110,7 @@ jobs:
           if [ "$CHANGELOG" != success ] && ! { [ "$EVENT" != pull_request ] && [ "$CHANGELOG" = skipped ]; }; then
             echo "::error::changelog: $CHANGELOG"; ok=false
           fi
-          [ "$MACOS" = success ] || { echo "::error::macos: $MACOS (skipped = runner variable EID_MACOS_RUNNER unset)"; ok=false; }
+          [ "$MACOS" = success ] || { echo "::error::macos: $MACOS"; ok=false; }
           [ "$WINDOWS" = success ] || { echo "::error::windows: $WINDOWS"; ok=false; }
           [ "$LINUX" = success ] || { echo "::error::verifier-linux: $LINUX"; ok=false; }
           $ok

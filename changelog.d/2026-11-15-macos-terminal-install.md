@@ -8,3 +8,6 @@
 - **Хэрхэн шалгасан:** 2026-11-15 v0.1.0 zip-ийг `curl -L`-ээр татаж (quarantine тэмдэггүй), hash тулгаж, CLI ба GUI-г
   ажиллуулсан; `shasum -a 256 -c SHA256SUMS --ignore-missing` → `OK`, exit 0.
 - **Үлдсэн:** Developer ID + notarization (Account Holder сертификат үүсгэсний дараа).
+- **CI (репо public болсонтой холбоотой):** `ci.yml`-ийн `macos` job `EID_MACOS_RUNNER` хувьсагчгүй үед алгасагдаж
+  `gate`-ийг унагадаг байсныг больсон — хувьсагчгүй бол GitHub-hosted `macos-15` дээр release-ийн build замаар
+  (эхээс, hash-бэхэлсэн) ажиллана. Public репогийн PR self-hosted runner дээр ажиллахгүй; хувьсагчийг устгасан.
