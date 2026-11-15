@@ -71,6 +71,20 @@ PR-ийн build-үүд self-hosted runner дээр явж болох ч тэр �
 
 ### macOS
 
+**Санал болгож буй зам — Terminal-аар татах.** `curl`-аар татсан файлд macOS «quarantine» тэмдэг тавьдаггүй тул
+Gatekeeper-ийн анхааруулга гарахгүй, нэмэлт алхам хэрэггүй:
+
+```bash
+cd ~/Downloads
+curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-macos.zip
+curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/SHA256SUMS
+shasum -a 256 -c SHA256SUMS --ignore-missing      # eid-token-test-macos.zip: OK
+unzip -q eid-token-test-macos.zip
+open "eid-token-test-macos/eID Token Test.app"
+```
+
+Браузераар татсан бол доорх «Анхны нээлтээс ӨМНӨ» алхмыг хийнэ.
+
 - **Шаардлага:** macOS 14 ба түүнээс хойш, Apple Silicon эсвэл Intel (апп, модуль, CLI нь universal). Нэмэлт драйвер,
   OpenSC суулгах шаардлагагүй — модуль апп дотор (`Contents/Frameworks/`); токеныг macOS-ийн PC/SC-ээр уншина.
 - **Бичдэг файлууд:** апп систем, keychain-д юу ч бичихгүй; түр хавтсанд OpenSC-ийн жижиг тохиргооны файл, эхлэх бүрд
