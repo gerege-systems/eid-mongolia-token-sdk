@@ -6,5 +6,5 @@
   Gatekeeper-ийн анхааруулга гарахгүй — сертификатгүйгээр интеграторт саадгүй эхлэх зам.
 - **Хаана:** `README.md` §3.
 - **Хэрхэн шалгасан:** 2026-11-15 v0.1.0 zip-ийг `curl -L`-ээр татаж (quarantine тэмдэггүй), hash тулгаж, CLI ба GUI-г
-  ажиллуулсан. `shasum --ignore-missing` мөрийг тэр машинд ажиллуулаагүй.
+  ажиллуулсан; `shasum -a 256 -c SHA256SUMS --ignore-missing` → `OK`, exit 0.
 - **Үлдсэн:** Developer ID + notarization (Account Holder сертификат үүсгэсний дараа).
