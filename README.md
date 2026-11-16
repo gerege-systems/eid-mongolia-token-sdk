@@ -10,11 +10,35 @@ eID USB токеноос (ePass2003, PKCS#15, OpenSC) гэрчилгээ унш�
 солих / тайлах. `pkcs15-init` болон OpenSC-ийн бусад хэрэгсэл, profile файл багцад ороогүй; session бүр
 `CKF_RW_SESSION`-гүй; нэг оролдлого = яг нэг `C_Login`.
 
+## Суулгах — аль замаар вэ
+
+> **Анхаар:** GitHub-ийн ногоон **«Code → Download ZIP»** товч зөвхөн **эх код** өгнө (`windows\` дотор `.sln`, `src`,
+> `tests` …) — дотор нь бэлэн апп, exe **байхгүй**. Бэлэн апп **Releases** хуудсанд байна.
+
+- Releases (сүүлийн хувилбар): <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest>
+- Windows: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-windows-x64.zip>
+- macOS: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-macos.zip>
+- Checksum: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/SHA256SUMS>
+
+| Та | Дагах хэсэг |
+|---|---|
+| Windows, браузераар татна (энгийн хэрэглэгч) | [Windows A](#windows-a-браузераар-татах) |
+| Windows, PowerShell ашиглана | [Windows B](#windows-b-powershell-ээр-татах) |
+| macOS (санал болгох) | [macOS A](#macos-a-terminal-аар-татах) |
+| macOS, браузераар татсан | [macOS B](#macos-b-браузераар-татах) |
+| Эх кодоос өөрөө бүтээнэ | [Windows C](#windows-c-эх-кодоос-бүтээх), [macOS C](#macos-c-эх-кодоос-бүтээх) → §4 |
+| Зөвхөн command-line хэрэгсэл | [Command-line хэрэгсэл](#command-line-хэрэгсэл-суулгах-шаардлагагүй) |
+| Өөрийн системд токеноор нэвтрэлт нэмнэ | [§5](#5-module-ийг-өөрийн-апп-д-ашиглах), [§6](#6-сервер-дээрх-нэвтрэлтийн-шалгалт-норматив) |
+
 ## Агуулга
 
-1. [Энэ юу вэ](#eid-mongolia-token-sdk)
+1. [Энэ юу вэ](#eid-mongolia-token-sdk) · [Суулгах — аль замаар вэ](#суулгах--аль-замаар-вэ)
 2. [Репогийн бүтэц](#2-репогийн-бүтэц)
-3. [Хурдан эхлэх](#3-хурдан-эхлэх)
+3. [Хурдан эхлэх](#3-хурдан-эхлэх) — [Windows A](#windows-a-браузераар-татах) ·
+   [Windows B](#windows-b-powershell-ээр-татах) · [Windows C](#windows-c-эх-кодоос-бүтээх) ·
+   [macOS A](#macos-a-terminal-аар-татах) · [macOS B](#macos-b-браузераар-татах) · [macOS C](#macos-c-эх-кодоос-бүтээх) ·
+   [Command-line хэрэгсэл](#command-line-хэрэгсэл-суулгах-шаардлагагүй) ·
+   [Шаардлага ба бичдэг файлууд](#шаардлага-ба-бичдэг-файлууд) · [Татсан файлыг шалгах](#татсан-файлыг-шалгах)
 4. [Эх кодоос бүтээх](#4-эх-кодоос-бүтээх)
 5. [Module-ийг өөрийн апп-д ашиглах](#5-module-ийг-өөрийн-апп-д-ашиглах)
 6. [Сервер дээрх нэвтрэлтийн шалгалт (норматив)](#6-сервер-дээрх-нэвтрэлтийн-шалгалт-норматив)
@@ -60,60 +84,175 @@ Apple-ийн платформын код (Security.framework) — сервер �
 
 ## 3. Хурдан эхлэх
 
-Багцыг репогийн **GitHub Releases**-ээс авна: `eid-token-test-macos.zip`, `eid-token-test-windows-x64.zip` ба
-`SHA256SUMS` (хоёр zip-ийн SHA-256 нь release-ийн тайлбарт ч бий; татсан zip-ээ `shasum -a 256 -c SHA256SUMS` /
-PowerShell `Get-FileHash`-аар тулга). Checksum нь зөвхөн **татсан файл бүтэн, өөрчлөгдөөгүйг** (release хуудастай
-таарч буйг) харуулна — хэн бүтээснийг батлахгүй (build-үүд code-signing-гүй). Release-ийн файлууд зөвхөн
-**GitHub-hosted** runner (macos-15, windows-latest) дээр, `main` дээрх tag-ийн яг тэр commit-оос, CI-тэй ижил алхмаар
-(unit тест орно) бүтээгдэнэ; macOS-ийн OpenSC, OpenSSL, XcodeGen-ийг SHA-256-аар бэхэлсэн эх сурвалжаас шинээр бүтээнэ.
-PR-ийн build-үүд self-hosted runner дээр явж болох ч тэр нь итгэлийн хил биш — тэдгээрээс юу ч release-д орохгүй. Эсвэл
-§4-өөр эх кодоос бүтээнэ.
+Бэлэн апп **GitHub Releases**-д: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest>
+(`eid-token-test-windows-x64.zip`, `eid-token-test-macos.zip`, `SHA256SUMS`). Доорх зам бүр бие даасан — өөрийн
+компьютер, дассан аргадаа тохирох **нэгийг** л дага. GitHub-ийн «Code → Download ZIP» зөвхөн эх код өгнө (C зам, §4).
 
-### macOS
+### Windows A: браузераар татах
 
-**Санал болгож буй зам — Terminal-аар татах.** `curl`-аар татсан файлд macOS «quarantine» тэмдэг тавьдаггүй тул
-Gatekeeper-ийн анхааруулга гарахгүй, нэмэлт алхам хэрэггүй:
+**Шаардлага:** Windows 10 1809 ба түүнээс хойш эсвэл Windows 11, x64; суулгалт шаардахгүй
+([дэлгэрэнгүй](#шаардлага-ба-бичдэг-файлууд)).
 
-```bash
-cd ~/Downloads
-curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-macos.zip
-curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/SHA256SUMS
-shasum -a 256 -c SHA256SUMS --ignore-missing      # eid-token-test-macos.zip: OK
-unzip -q eid-token-test-macos.zip
-open "eid-token-test-macos/eID Token Test.app"
-```
+1. Браузераар татна:
+   <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-windows-x64.zip>
+   (эсвэл [Releases](https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest) хуудасны «Assets» хэсгээс
+   `eid-token-test-windows-x64.zip`). Ногоон «Code → Download ZIP» **биш**.
+2. **Задлахаас ӨМНӨ:** татсан zip дээр баруун товч → **Properties** → доод хэсгийн **«Unblock»**-ийг чагтална → **OK**.
+   PowerShell-ээр: `Unblock-File .\eid-token-test-windows-x64.zip`. Unblock хийсэн zip-ээс задалсан файлд
+   Mark-of-the-Web байхгүй тул анхааруулгын цонх гарахгүй.
+3. Zip дээр баруун товч → **Extract All…** → **Extract**. `eid-token-test-windows-x64` нэртэй хавтас үүснэ.
+4. Тэр хавтсыг нээ — дотор нь **ижил нэртэй** `eid-token-test-windows-x64` хавтас дахин бий, түүнийг ч нээ. Exe-ийн зам:
+   `<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-test.exe`.
+5. `eid-token-test.exe` дээр давхар дарна. Хажууд нь олон `.dll` файл байгаа — нэрээр эрэмбэл, эсвэл «Type» нь
+   «Application» файлыг ол.
+6. «Unblock»-ийг алгассан бол «Open File - Security Warning» («The publisher could not be verified») цонх гарна →
+   **Run**. Оронд нь «Windows protected your PC» (SmartScreen) цонх гарч ч болно → **More info** → **Run anyway**.
+   (Exe code-signing гарын үсэггүй.)
 
-Браузераар татсан бол доорх «Анхны нээлтээс ӨМНӨ» алхмыг хийнэ.
+**Амжилттай бол:** «eID Token Test» цонх гурван хэсэгтэй нээгдэнэ ([доор](#цонхны-гурван-хэсэг-хоёр-платформд-ижил));
+exe-ийн хажуудах `eid-token-test.log`-д `main page loaded` мөр бичигдэнэ.
+
+**Түгээмэл саад:**
+
+- Exe олдохгүй, zip дотор зөвхөн `.sln`, `src`, `tests` байна → эх кодын архив («Code → Download ZIP») татсан байна;
+  1-р алхмын холбоосоор дахин тат.
+- «Unblock»-ийг алгассан → апп эхлэхээсээ өмнө дээрх анхааруулгын цонхонд хариулт хүлээнэ; хариулах хүртэл апп
+  **эхлэхгүй**. Дэлгэц харагдахгүй үед (ssh, дэлгэцгүй алсын холболт) чимээгүй гацсан мэт харагдана. Аль хэдийн
+  задалсан бол тэр хавтсанд PowerShell-ээр: `Get-ChildItem -Recurse | Unblock-File`.
+
+### Windows B: PowerShell-ээр татах
+
+**Шаардлага:** Windows A-тай ижил; Windows PowerShell 5.1 (Windows-д суусан) хангалттай.
+
+`curl.exe`-ээр татсан файлд Mark-of-the-Web тавигддаггүй тул «Unblock» алхам хэрэггүй. **`curl.exe`** гэж бүтнээр нь
+бич — Windows PowerShell-д `curl` нь `Invoke-WebRequest`-ийн alias.
+
+1. Zip ба `SHA256SUMS`-ийг татна:
+
+   ```powershell
+   cd $HOME\Downloads
+   curl.exe -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-windows-x64.zip
+   curl.exe -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/SHA256SUMS
+   ```
+
+2. Checksum тулгана — **`True`** хэвлэх ёстой (`False` бол задлахгүй, дахин тат):
+
+   ```powershell
+   (Get-FileHash .\eid-token-test-windows-x64.zip -Algorithm SHA256).Hash -eq ((Select-String -Path .\SHA256SUMS -Pattern 'windows-x64\.zip').Line -split '\s+')[0]
+   ```
+
+3. Задална: `Expand-Archive .\eid-token-test-windows-x64.zip -DestinationPath .`
+4. Апп нээнэ: `Start-Process .\eid-token-test-windows-x64\eid-token-test.exe`
+
+**Амжилттай бол:** 2-р алхам `True`; Windows A-тай ижил цонх нээгдэнэ.
+
+**Түгээмэл саад:** `curl`-ыг `.exe`-гүй бичвэл `Invoke-WebRequest` ажиллаж `-fLO` параметрийг танихгүй алдаа гарна →
+`curl.exe`. Өмнө нь задалсан `eid-token-test-windows-x64` хавтас байвал `Expand-Archive` алдаа өгнө — хуучин хавтсыг
+устга эсвэл `-Force` нэм.
+
+### Windows C: эх кодоос бүтээх
+
+**Шаардлага:** .NET 10 SDK. Энд л эх код хэрэгтэй: «Code → Download ZIP» эсвэл
+`git clone https://github.com/gerege-systems/eid-mongolia-token-sdk.git`. Алхмууд: [§4 Windows](#4-эх-кодоос-бүтээх).
+
+### macOS A: Terminal-аар татах
+
+**Шаардлага:** macOS 14 ба түүнээс хойш, Apple Silicon эсвэл Intel ([дэлгэрэнгүй](#шаардлага-ба-бичдэг-файлууд)).
+
+**Санал болгож буй зам.** `curl`-аар татсан файлд macOS «quarantine» тэмдэг тавьдаггүй тул Gatekeeper-ийн анхааруулга
+гарахгүй, нэмэлт алхам хэрэггүй.
+
+1. Terminal нээнэ (Applications → Utilities → Terminal).
+2. Дараах мөрүүдийг ажиллуулна:
+
+   ```bash
+   cd ~/Downloads
+   curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-macos.zip
+   curl -fLO https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/SHA256SUMS
+   shasum -a 256 -c SHA256SUMS --ignore-missing      # eid-token-test-macos.zip: OK
+   unzip -q eid-token-test-macos.zip
+   open "eid-token-test-macos/eID Token Test.app"
+   ```
+
+**Амжилттай бол:** `eid-token-test-macos.zip: OK` мөр хэвлэгдэж, «eID Token Test» цонх нээгдэнэ.
+
+**Түгээмэл саад:** `shasum` `OK` биш мөр хэвлэвэл файл бүтэн татагдаагүй — задлахгүй, дахин тат.
+
+### macOS B: браузераар татах
+
+**Шаардлага:** macOS A-тай ижил; Terminal-д нэг команд ажиллуулна.
+
+**Гарын үсэг:** энэ build-үүд **ad-hoc** гарын үсэгтэй, Apple-аар **notarize хийгдээгүй**. Браузераар татсан zip
+«quarantine» тэмдэгтэй тул Gatekeeper анхны нээлт дээр зогсооно. Эх кодоос өөрөө бүтээвэл (§4) энэ асуудал гарахгүй.
+
+1. Браузераар татна:
+   <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-macos.zip>.
+2. **Анхны нээлтээс ӨМНӨ** quarantine-ийг арилга — zip дээр (задлахаас өмнө) эсвэл задалсан **бүх хавтас** дээр (апп,
+   `eid-token-check`, модулийн файлууд бүгд). Terminal-д:
+
+   ```bash
+   cd ~/Downloads
+   xattr -dr com.apple.quarantine eid-token-test-macos.zip      # эсвэл: xattr -dr com.apple.quarantine eid-token-test-macos/
+   ```
+
+   quarantine тавьдаггүй хэрэгслээр (`curl`, `gh release download`) татсан файлд энэ алхам хэрэггүй.
+3. Finder-т zip дээр давхар дарж задална → `eid-token-test-macos` хавтас.
+4. `eid-token-test-macos/eID Token Test.app`-ийг нээнэ.
+
+**Амжилттай бол:** «eID Token Test» цонх анхааруулгагүй нээгдэнэ.
+
+**Түгээмэл саад:** Quarantine-тэй хэвээр нээвэл: апп «Not Opened / Apple could not verify …» цонх гаргана → System
+Settings → Privacy & Security → «Open Anyway». `eid-token-check`-ийн процесс тэр цонхонд хариулах хүртэл `main`-аас ӨМНӨ
+зогсоно — ssh / дэлгэцгүй үед чимээгүй гацсан мэт харагдана (§8 «eid-token-check хариу өгөхгүй гацсан»).
+
+### macOS C: эх кодоос бүтээх
+
+**Шаардлага:** Xcode 16+, XcodeGen 2.45.4. Энд л эх код хэрэгтэй: «Code → Download ZIP» эсвэл
+`git clone https://github.com/gerege-systems/eid-mongolia-token-sdk.git`. Алхмууд: [§4 macOS](#4-эх-кодоос-бүтээх).
+
+### Command-line хэрэгсэл: суулгах шаардлагагүй
+
+`eid-token-check` тусад нь суулгахгүй — хоёр zip-д апптай хамт ирнэ. Дээрх A эсвэл B замаар zip-ээ авч задлаад
+тэр хавтсаас ажиллуулна ([§7](#7-command-line-хэрэгсэл-eid-token-check)):
+
+- Windows: `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\` хавтас —
+  `eid-token-check\eid-token-check.exe` (хажуудаа `opensc-pkcs11.dll`). Windows B-ээр задалсан бол
+  `.\eid-token-test-windows-x64\eid-token-check\eid-token-check.exe`; Windows A-аар (Extract All) задалсан бол
+  `eid-token-test-windows-x64\` нэг түвшин нэмэгдэнэ:
+  `<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-check\eid-token-check.exe`;
+- macOS: `eid-token-test-macos/eid-token-check/eid-token-check` (хажуудаа `opensc-pkcs11.so`, `libopensc.12.dylib`,
+  `trust/`).
+
+### Шаардлага ба бичдэг файлууд
+
+**macOS**
 
 - **Шаардлага:** macOS 14 ба түүнээс хойш, Apple Silicon эсвэл Intel (апп, модуль, CLI нь universal). Нэмэлт драйвер,
   OpenSC суулгах шаардлагагүй — модуль апп дотор (`Contents/Frameworks/`); токеныг macOS-ийн PC/SC-ээр уншина.
 - **Бичдэг файлууд:** апп систем, keychain-д юу ч бичихгүй; түр хавтсанд OpenSC-ийн жижиг тохиргооны файл, эхлэх бүрд
   `~/Library/Logs/eid-token-test.log`-д эхлэлийн мөр (`main page loaded` эсвэл эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч
   биш). `EID_TOKEN_TEST_LOG` орчны хувьсагчаар өөр зам заана.
-- **Гарын үсэг:** энэ build-үүд **ad-hoc** гарын үсэгтэй, Apple-аар **notarize хийгдээгүй**. Браузераар татсан zip
-  «quarantine» тэмдэгтэй тул Gatekeeper анхны нээлт дээр зогсооно. Эх кодоос өөрөө бүтээвэл (§4) энэ асуудал гарахгүй.
-- **Анхны нээлтээс ӨМНӨ** quarantine-ийг арилга — zip дээр (задлахаас өмнө) эсвэл задалсан **бүх хавтас** дээр (апп,
-  `eid-token-check`, модулийн файлууд бүгд):
 
-  ```bash
-  xattr -dr com.apple.quarantine eid-token-test-macos.zip      # эсвэл: xattr -dr com.apple.quarantine eid-token-test-macos/
-  ```
-
-  quarantine тавьдаггүй хэрэгслээр (`curl`, `gh release download`) татсан файлд энэ алхам хэрэггүй.
-- Quarantine-тэй хэвээр нээвэл: апп «Not Opened / Apple could not verify …» цонх гаргана → System Settings → Privacy &
-  Security → «Open Anyway». `eid-token-check`-ийн процесс тэр цонхонд хариулах хүртэл `main`-аас ӨМНӨ зогсоно — ssh /
-  дэлгэцгүй үед чимээгүй гацсан мэт харагдана (§8 «eid-token-check хариу өгөхгүй гацсан»).
-
-### Windows
+**Windows**
 
 - **Шаардлага:** Windows 10 1809 (17763) ба түүнээс хойш эсвэл Windows 11, **x64**. Суулгалт шаардахгүй
   (self-contained: .NET 10 ба Windows App SDK хавтас дотроо). Smart Card service (`SCardSvr`) ажиллаж байх ёстой
-  (анхдагчаар асаалттай). Апп Windows-ийн гэрчилгээний санд юу ч суулгахгүй, registry бичихгүй. Бичдэг файлууд: түр
-  хавтсанд OpenSC-ийн жижиг тохиргооны файл; эхлэх бүрд `eid-token-test.log` — exe-ийн хажууд, тэр хавтас бичигдэхгүй
-  бол `%TEMP%`-д (эхлэлийн мөр `main page loaded` эсвэл эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч биш;
-  `EID_TOKEN_TEST_LOG`-оор өөр зам заана).
-- **Анхны нээлт:** exe code-signing гарын үсэггүй тул SmartScreen «Windows protected your PC» гарч болно →
-  «More info» → «Run anyway». Интернэтээс татсан zip бол задлахаас өмнө Properties → «Unblock».
+  (анхдагчаар асаалттай). Апп Windows-ийн гэрчилгээний санд юу ч суулгахгүй, registry бичихгүй.
+- **Бичдэг файлууд:** апп эсвэл `eid-token-check` ажиллах бүрд `%TEMP%\eid-token-test-<guid>\opensc.conf` (OpenSC-ийн
+  ≈31 байт тохиргооны файл) үүсгэнэ; эдгээр хавтас автоматаар **устахгүй**, устгахад аюулгүй. Апп эхлэх бүрд
+  `eid-token-test.log` — exe-ийн хажууд, тэр хавтас бичигдэхгүй бол `%TEMP%`-д (эхлэлийн мөр `main page loaded` эсвэл
+  эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч биш; `EID_TOKEN_TEST_LOG`-оор өөр зам заана).
+
+### Татсан файлыг шалгах
+
+Release бүрт хоёр zip ба `SHA256SUMS` хавсаргагдана (хоёр zip-ийн SHA-256 нь release-ийн тайлбарт ч бий). Тулгах
+команд: macOS — `shasum -a 256 -c SHA256SUMS --ignore-missing` ([macOS A](#macos-a-terminal-аар-татах)), Windows —
+PowerShell `Get-FileHash` ([Windows B](#windows-b-powershell-ээр-татах), 2-р алхам). Checksum нь зөвхөн **татсан файл
+бүтэн, өөрчлөгдөөгүйг** (release хуудастай таарч буйг) харуулна — хэн бүтээснийг батлахгүй (build-үүд code-signing-гүй).
+Release-ийн файлууд зөвхөн **GitHub-hosted** runner (macos-15, windows-latest) дээр, `main` дээрх tag-ийн яг тэр
+commit-оос, CI-тэй ижил алхмаар (unit тест орно) бүтээгдэнэ; macOS-ийн OpenSC, OpenSSL, XcodeGen-ийг SHA-256-аар
+бэхэлсэн эх сурвалжаас шинээр бүтээнэ. PR-ийн build-үүд self-hosted runner дээр явж болох ч тэр нь итгэлийн хил биш —
+тэдгээрээс юу ч release-д орохгүй.
 
 ### Цонхны гурван хэсэг (хоёр платформд ижил)
 
@@ -137,6 +276,8 @@ PIN: зөвхөн тухайн нэг `C_Login`-д ашиглагдаад сан
 
 ## 4. Эх кодоос бүтээх
 
+Энд эх код хэрэгтэй: GitHub-ийн «Code → Download ZIP» эсвэл
+`git clone https://github.com/gerege-systems/eid-mongolia-token-sdk.git` (Releases-ийн zip-д эх код байхгүй).
 CI-ийн workflow-ууд яг эдгээр командыг ажиллуулна (`.github/workflows/`).
 
 ### macOS (Xcode 16+, XcodeGen 2.45.4)
@@ -529,8 +670,9 @@ http нь зөвхөн тээвэр) — firewall / proxy `ocsp.eidmongolia.mn`,
 
 Апптай **ижил** уншигч, нэвтрэх урсгал, шалгагчийн кодоор ажиллана (GUI-гүй машин дээр, жишээ нь алсаас токентой
 компьютерт шалгах). macOS: zip-ийн `eid-token-check/eid-token-check` (хажуудаа `opensc-pkcs11.so`, `libopensc.12.dylib`,
-`trust/`); Windows: `eid-token-check\eid-token-check.exe` (хажуудаа `opensc-pkcs11.dll`; итгэлийн гэрчилгээ exe-д
-шингэсэн).
+`trust/`); Windows: `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\eid-token-check.exe` (хажуудаа
+`opensc-pkcs11.dll`; итгэлийн гэрчилгээ exe-д шингэсэн; бүтэн зам —
+[Command-line хэрэгсэл](#command-line-хэрэгсэл-суулгах-шаардлагагүй)).
 
 ```
 eid-token-check --module <opensc-pkcs11 зам> [--serial <токены серийн дугаар>] [--json]
@@ -548,6 +690,9 @@ eid-token-check --module <зам> --serial <серийн дугаар> [--origin
 - Үл мэдэгдэх эсвэл байрлалын аргументыг (жишээ нь андуурч бичсэн PIN) **буцааж хэвлэхгүй** — ерөнхий «Үл мэдэгдэх
   аргумент» алдаа (exit 2).
 - `--json`: нэг JSON объект (`tokens[]` / `checks[]`, `loggedIn`, `summary` / `error`), талбарын нэр хоёр платформд ижил.
+- `--help` (`-h`): хэрэглээг хэвлэнэ, exit 0. Аргументгүй ажиллуулбал хэрэглээг хэвлээд exit 2.
+- Гаралт UTF-8. Windows-ийн консолд монгол бичвэр эвдэрч харагдвал: cmd — `chcp 65001`, PowerShell —
+  `[Console]::OutputEncoding = [Text.Encoding]::UTF8`.
 
 | Exit code | Утга |
 |---|---|
@@ -563,16 +708,30 @@ eid-token-check --module <зам> --serial <серийн дугаар> [--origin
 ./eid-token-check --module ./opensc-pkcs11.so --serial 0123456789ABCDEF --origin login.example.mn --login --json < pin.txt
 ```
 
+Windows (PowerShell): `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\` хавтаснаас. Доорх `cd` нь
+Windows B-ээр задалсан хавтаснаас; Windows A-аар (Extract All) задалсан бол `eid-token-test-windows-x64\` нэг түвшин
+нэмэгдэнэ (`cd .\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-check`).
+
+```powershell
+cd .\eid-token-test-windows-x64\eid-token-check
+.\eid-token-check.exe --help
+.\eid-token-check.exe --module .\opensc-pkcs11.dll            # токен ба гэрчилгээнүүд, exit 0
+.\eid-token-check.exe --module .\opensc-pkcs11.dll --json
+Get-Content pin.txt | .\eid-token-check.exe --module .\opensc-pkcs11.dll --serial 0123456789ABCDEF --origin login.example.mn --login --json
+```
+
 ## 8. Алдаа засах
 
 | Шинж тэмдэг | Шалтгаан / хийх зүйл |
 |---|---|
+| exe олдохгүй / zip дотор зөвхөн `.sln`, `src`, `tests` байна | Эх кодын архив (GitHub-ийн «Code → Download ZIP») татсан байна — бэлэн апп тэнд байхгүй. Releases-ээс ав: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest> ([Суулгах — аль замаар вэ](#суулгах--аль-замаар-вэ)). |
+| Windows: апп эхлэхгүй, чимээгүй гацсан мэт | «Unblock»-гүй задалсан файл: Windows анхааруулгын цонхонд («Open File - Security Warning» эсвэл «Windows protected your PC») хариулт хүлээж байна, хариулах хүртэл апп эхлэхгүй; дэлгэц харагдахгүй үед (ssh, дэлгэцгүй алсын холболт) цонх харагдахгүй. Дэлгэц дээрх цонхонд хариул, эсвэл тэр хавтсанд `Get-ChildItem -Recurse \| Unblock-File` ([Windows A](#windows-a-браузераар-татах)). |
 | «Токен олдсонгүй» / exit 3 | Токен USB-д залгаатай эсэх; өөр програм токеныг онцгой (exclusive) эзэмшиж байвал хаагаад «Дахин унших». Windows: Smart Card service (`SCardSvr`) асаалттай эсэх. `--serial`-ийн утга жагсаалтынхтай яг таарах эсэх. |
-| PKCS#11 модулийг ачаалж чадсангүй / exit 3 | Зам зөв эсэх; macOS: `libopensc.12.dylib` `opensc-pkcs11.so`-тэй нэг хавтсанд байх; quarantine (§3 macOS — анхны ажиллуулалтаас өмнө). Windows: **32-bit процесс** x64 модулийг ачаалж чадахгүй — танай програм 64-bit байх ёстой. |
+| PKCS#11 модулийг ачаалж чадсангүй / exit 3 | Зам зөв эсэх; macOS: `libopensc.12.dylib` `opensc-pkcs11.so`-тэй нэг хавтсанд байх; quarantine ([§3 macOS B](#macos-b-браузераар-татах) — анхны ажиллуулалтаас өмнө). Windows: **32-bit процесс** x64 модулийг ачаалж чадахгүй — танай програм 64-bit байх ёстой. |
 | eid-token-check хариу өгөхгүй гацсан (macOS) | Татсан (quarantine-тэй) ad-hoc build-ийг анх ажиллуулахад Gatekeeper процессыг `main`-аас ӨМНӨ барьж, Mac-ийн дэлгэц дээр «Apple could not verify …» цонхонд хариулахыг хүлээнэ — ssh / дэлгэцгүй үед чимээгүй гацсан мэт. Гацсаны дараа quarantine арилгах нь тэр процессыг суллахгүй. Засах: Mac-ийн дэлгэц дээрх цонхыг хаах (эсвэл гацсан процессыг зогсоох) → zip-ийг дахин задлах → `xattr -dr com.apple.quarantine <zip эсвэл задалсан хавтас>` → дахин ажиллуулах. Эсвэл `curl` / `gh release download`-оор татах, эсвэл эх кодоос бүтээх (§4). |
 | Аппын цонх хоосон эсвэл «эхэлж чадсангүй» алдааны цонх | Апп эхлэх үеийн алдааг дэлгэцэнд (алдааны цонх эсвэл message box) ба лог файлд бичнэ: Windows — `eid-token-test.exe`-ийн хажуудах `eid-token-test.log` (хавтас бичигдэхгүй бол `%TEMP%`), macOS — `~/Library/Logs/eid-token-test.log` (`EID_TOKEN_TEST_LOG`-оор өөр зам заана). Амжилттай эхэлбэл `main page loaded` мөр бичигдэнэ. Windows: zip-ийг бүтнээр нь задал (`resources.pri`, `*.xbf` файлууд exe-ийн хажууд байх ёстой). |
 | Windows: цонх гарсан ч дотор нь цагаан / хоосон (алсын / дэлгэцгүй компьютер) | Дэлгэц унтарсан (power off) үед Windows цонхны агуулгыг дэлгэц сэрэх хүртэл зурдаггүй — аппын алдаа биш. Дэлгэцийг сэрээ (эсвэл алсын сессээр холбогд); лог дахь `main page loaded` мөр апп хэвийн ачаалсныг харуулна. |
-| Апп «Not Opened» / «Apple could not verify …» (macOS) | Ad-hoc, notarize хийгдээгүй build. System Settings → Privacy & Security → «Open Anyway», эсвэл анхны нээлтээс өмнө quarantine арилга (§3 macOS). |
+| Апп «Not Opened» / «Apple could not verify …» (macOS) | Ad-hoc, notarize хийгдээгүй build. System Settings → Privacy & Security → «Open Anyway», эсвэл анхны нээлтээс өмнө quarantine арилга ([§3 macOS B](#macos-b-браузераар-татах)). |
 | «eID гэрчилгээ олдсонгүй» | Токенд eID-ийн `CKA_ID`-тай (`45494401/02/11/12`) гэрчилгээ алга — өөр байгууллагын токен, эсвэл гэрчилгээ олгогдоогүй токен. Токен олгосон байгууллагад хандана. |
 | «Токен форматлагдаагүй (PKCS#15 бүтэцгүй)» | Хоосон токен; энэ багц форматлахгүй. |
 | PIN: оролдлого цөөн | Өмнө нь буруу PIN оруулсан; анхааралтай оруул. |

@@ -1,9 +1,30 @@
 # eID Token Test — Windows
 
+## Хурдан эхлэх
+
+1. Татна: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-windows-x64.zip>
+   (ногоон «Code → Download ZIP» биш — тэр нь зөвхөн эх код, exe-гүй).
+2. **Задлахаас ӨМНӨ:** zip дээр баруун товч → Properties → «Unblock»-ийг чагтлах → OK.
+3. Zip дээр баруун товч → Extract All → `eid-token-test-windows-x64` хавтас үүснэ; түүнийг нээ — дотор нь **ижил нэртэй**
+   хавтас дахин бий, түүнийг ч нээ (`<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\`).
+4. `eid-token-test.exe` дээр давхар дарна (хажууд нь олон `.dll` — «Type» нь «Application» файл).
+5. «Unblock»-ийг алгассан бол «Open File - Security Warning» гарна → Run. Оронд нь «Windows protected your PC» гарч ч
+   болно → More info → Run anyway.
+
+Дэлгэрэнгүй: браузераар —
+[Windows A](https://github.com/gerege-systems/eid-mongolia-token-sdk/blob/main/README.md#windows-a-браузераар-татах),
+PowerShell-ээр —
+[Windows B](https://github.com/gerege-systems/eid-mongolia-token-sdk/blob/main/README.md#windows-b-powershell-ээр-татах)
+(zip дотор ижил гарын авлага нь хажуудах `README.md`-ийн §3).
+
 Бүрэн гарын авлага (нэвтрэлтийн дүрэм, модуль ашиглах, command-line хэрэгсэл, алдаа засах, лиценз) нь репогийн үндсэн
-[`README.md`](../README.md)-д (zip-д `README.md`). Энэ файл зөвхөн Windows-ийн багцын бүтэц ба эх кодын байршлыг заана.
+[`README.md`](https://github.com/gerege-systems/eid-mongolia-token-sdk/blob/main/README.md)-д (zip дотор хажуудах
+`README.md`). Энэ файл Windows-ийн хурдан эхлэл, багцын бүтэц ба эх кодын байршлыг заана.
 
 ## Zip (`eid-token-test-windows-x64.zip`, GitHub Releases)
+
+Замууд нь `eid-token-test.exe`-тэй хавтастай харьцангуй: zip доторх `eid-token-test-windows-x64\`; Extract All-аар
+задалбал `<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\`.
 
 | Зам | Юу вэ |
 |---|---|
