@@ -7,6 +7,9 @@
     <Deterministic>true</Deterministic>
     <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
     <NeutralLanguage>mn-MN</NeutralLanguage>
+    <!-- Development version of every project. A release build overrides it from the tag (token-sdk-windows.yml passes
+         -p:Version, AssemblyVersion, FileVersion and InformationalVersion); a global property wins over this line. -->
+    <Version>0.2.0</Version>
   </PropertyGroup>
 
 </Project>

@@ -16,6 +16,19 @@ internal static class StartupLog
 
     public static string FilePath { get; } = ResolvePath();
 
+    /// The product version as built: the release tag without `v` (`0.1.0`, `0.2.0-rc.1`), without a `+<commit>` suffix.
+    public static string ProductVersion { get; } = ResolveVersion();
+
+    private static string ResolveVersion()
+    {
+        var assembly = typeof(StartupLog).Assembly;
+        var version = System.Reflection.CustomAttributeExtensions
+            .GetCustomAttribute<System.Reflection.AssemblyInformationalVersionAttribute>(assembly)?.InformationalVersion
+            ?? assembly.GetName().Version?.ToString() ?? "unknown";
+        var plus = version.IndexOf('+');
+        return plus < 0 ? version : version[..plus];
+    }
+
     public static void Write(string message)
     {
         var line = DateTimeOffset.UtcNow.ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", System.Globalization.CultureInfo.InvariantCulture)

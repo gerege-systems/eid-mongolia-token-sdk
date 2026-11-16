@@ -229,7 +229,10 @@ Settings → Privacy & Security → «Open Anyway». `eid-token-check`-ийн п
 
 - **Шаардлага:** macOS 14 ба түүнээс хойш, Apple Silicon эсвэл Intel (апп, модуль, CLI нь universal). Нэмэлт драйвер,
   OpenSC суулгах шаардлагагүй — модуль апп дотор (`Contents/Frameworks/`); токеныг macOS-ийн PC/SC-ээр уншина.
-- **Бичдэг файлууд:** апп систем, keychain-д юу ч бичихгүй; түр хавтсанд OpenSC-ийн жижиг тохиргооны файл, эхлэх бүрд
+- **Бичдэг файлууд:** апп систем, keychain-д юу ч бичихгүй; ажиллах бүрд түр хавтас
+  `eid-token-test-<UUID>/opensc.conf` (OpenSC-ийн жижиг тохиргооны файл) үүсгээд процесс хэвийн дуусахад **устгана**.
+  Гэнэт зогссон ажиллалтын үлдээсэн ийм хавтсыг дараагийн эхлэлд, 7 хоногоос хуучирсан, нэр нь яг энэ загвартай, зөвхөн
+  `opensc.conf` агуулсан бол л устгана (бусад файл, symlink-ийг хөндөхгүй). Эхлэх бүрд
   `~/Library/Logs/eid-token-test.log`-д эхлэлийн мөр (`main page loaded` эсвэл эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч
   биш). `EID_TOKEN_TEST_LOG` орчны хувьсагчаар өөр зам заана.
 
@@ -239,7 +242,10 @@ Settings → Privacy & Security → «Open Anyway». `eid-token-check`-ийн п
   (self-contained: .NET 10 ба Windows App SDK хавтас дотроо). Smart Card service (`SCardSvr`) ажиллаж байх ёстой
   (анхдагчаар асаалттай). Апп Windows-ийн гэрчилгээний санд юу ч суулгахгүй, registry бичихгүй.
 - **Бичдэг файлууд:** апп эсвэл `eid-token-check` ажиллах бүрд `%TEMP%\eid-token-test-<guid>\opensc.conf` (OpenSC-ийн
-  ≈31 байт тохиргооны файл) үүсгэнэ; эдгээр хавтас автоматаар **устахгүй**, устгахад аюулгүй. Апп эхлэх бүрд
+  ≈31 байт тохиргооны файл) үүсгээд процесс хэвийн дуусахад хавтсыг **устгана**. Гэнэт зогссон ажиллалтын үлдээсэн
+  ийм хавтсыг дараагийн эхлэлд, 7 хоногоос хуучирсан, нэр нь яг энэ загвартай (`eid-token-test-` + 32 hex), зөвхөн
+  `opensc.conf` агуулсан бол л устгана (бусад файл, link-ийг хөндөхгүй). Хуучин хувилбаруудын үлдээсэн хавтсыг гараар
+  устгахад аюулгүй. Апп эхлэх бүрд
   `eid-token-test.log` — exe-ийн хажууд, тэр хавтас бичигдэхгүй бол `%TEMP%`-д (эхлэлийн мөр `main page loaded` эсвэл
   эхлэлийн алдаа; PIN, гэрчилгээ хэзээ ч биш; `EID_TOKEN_TEST_LOG`-оор өөр зам заана).
 
@@ -311,10 +317,15 @@ dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x6
 ### Release (maintainer)
 
 1. Release хийх commit `main` дээр байна; түүн дээр tag тавина: `git tag v0.3.0 <commit> && git push origin v0.3.0`.
-2. GitHub → Actions → **release** → «Run workflow»: branch **main**, `tag` = `v0.3.0`.
+2. GitHub → Actions → **release** → «Run workflow»: branch **main**, `tag` = `v0.3.0`. Tag нь `v<x.y.z>` эсвэл
+   `v<x.y.z>-<pre>` хэлбэртэй байх ёстой; бүтээгдсэн апп, `eid-token-check` (Windows) ба `Info.plist` (macOS) яг энэ
+   хувилбарыг (`v`-гүй) мэдээлнэ, зөрвөл workflow унана. Файлуудын хувилбарыг tag-аас тусад нь засах шаардлагагүй
+   (`windows/Directory.Build.props`, `macos/project.yml` дахь хувилбар нь зөвхөн хөгжүүлэлтийн анхдагч).
 3. Workflow tag main дээр байгааг шалгаад тэр commit-ийг GitHub-hosted runner-ууд дээр бүтээж, хоёр zip + `SHA256SUMS`-ийг
    Release-д хавсаргана. Tag-ийг дундаас нь өөр commit руу шилжүүлбэл юу ч нийтлэхгүй; файлтай release-ийг дахин бичихгүй.
-4. CI-ийн macOS release замыг нийтлэхгүйгээр шалгах: Actions → **ci** → «Run workflow», `macos_release_dry_run` ✓.
+4. CI-ийн macOS release замыг нийтлэхгүйгээр шалгах: Actions → **ci** → «Run workflow», `macos_release_dry_run` ✓
+   (хувилбарыг `0.0.0-dry-run.1` гэж тавьж, `Info.plist`-ийн шалгалтыг ажиллуулна). Windows-ийн хувилбарын шалгалтыг
+   нийтлэхгүйгээр ажиллуулах зам байхгүй — release-ийн үед л ажиллана.
 
 ## 5. Module-ийг өөрийн апп-д ашиглах
 

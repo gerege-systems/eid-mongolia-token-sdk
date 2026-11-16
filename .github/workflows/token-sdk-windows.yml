@@ -26,6 +26,11 @@ on:
       release:
         type: boolean
         default: false
+      # The release tag without the leading v (x.y.z or x.y.z-pre). Empty: the development version from
+      # windows/Directory.Build.props. Set: the build gets exactly this version and the run fails if the built exes differ.
+      version:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -51,6 +56,20 @@ jobs:
         with:
           global-json-file: windows/global.json
       - run: dotnet --version
+      # A release's version comes from its tag. x.y.z[-pre] → Version/InformationalVersion = as given, AssemblyVersion and
+      # FileVersion = x.y.z.0 (the numeric 4-part form; a pre-release suffix cannot go there).
+      - name: version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $props = ''
+          if ($env:VERSION -ne '') {
+            if ($env:VERSION -notmatch '^(\d+\.\d+\.\d+)(-[0-9A-Za-z.]+)?\z') { throw "not a release version: $env:VERSION" }
+            $core = $Matches[1]
+            $props = "-p:Version=$env:VERSION -p:InformationalVersion=$env:VERSION -p:AssemblyVersion=$core.0 -p:FileVersion=$core.0"
+          }
+          Write-Host "version properties: '$props'"
+          "VERSION_PROPS=$props" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: unit tests
         run: |
           dotnet test tests/EidTokenTest.Tests/EidTokenTest.Tests.csproj -c Release --logger "trx;LogFileName=tests.trx" --logger "console;verbosity=normal"
@@ -66,17 +85,35 @@ jobs:
         run: |
           $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
           if (Test-Path $out) { Remove-Item $out -Recurse -Force }
-          dotnet publish src/EidTokenTest.App/EidTokenTest.App.csproj -c Release -p:Platform=x64 -p:DebugType=none -p:DebugSymbols=false -o $out
+          dotnet publish src/EidTokenTest.App/EidTokenTest.App.csproj -c Release -p:Platform=x64 -p:DebugType=none -p:DebugSymbols=false @($env:VERSION_PROPS -split ' ' | Where-Object { $_ }) -o $out
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish (app) failed (exit $LASTEXITCODE)" }
       - name: publish eid-token-check (self-contained, win-x64)
         run: |
           $cli = Join-Path $env:RUNNER_TEMP 'eid-token-test\eid-token-check'
-          dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=none -p:DebugSymbols=false -o $cli
+          dotnet publish src/EidTokenTest.Cli/EidTokenTest.Cli.csproj -c Release -r win-x64 --self-contained true -p:DebugType=none -p:DebugSymbols=false @($env:VERSION_PROPS -split ' ' | Where-Object { $_ }) -o $cli
           if ($LASTEXITCODE -ne 0) { throw "dotnet publish (cli) failed (exit $LASTEXITCODE)" }
           # Debug symbols a referenced project or package still left behind are not shipped.
           Get-ChildItem (Join-Path $env:RUNNER_TEMP 'eid-token-test') -Recurse -File -Filter *.pdb | ForEach-Object {
             Write-Host "not shipped: $($_.FullName)"
             Remove-Item $_.FullName
+          }
+      # A release must carry the version of its tag: both published assemblies report it (the app logs the same value).
+      - name: check the version
+        if: ${{ inputs.version != '' }}
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          $core = ($env:VERSION -split '-')[0]
+          $out = Join-Path $env:RUNNER_TEMP 'eid-token-test'
+          # The managed assemblies carry the version resource (the apphost .exe next to each only starts them).
+          foreach ($dll in 'eid-token-test.dll', 'eid-token-check\eid-token-check.dll') {
+            $path = Join-Path $out $dll
+            if (-not (Test-Path $path)) { throw "missing in package: $dll" }
+            $v = (Get-Item $path).VersionInfo
+            $product = ($v.ProductVersion -split '\+')[0]
+            Write-Host "$dll  ProductVersion=$($v.ProductVersion)  FileVersion=$($v.FileVersion)"
+            if ($product -ne $env:VERSION) { throw "$dll reports version $product, the tag says $env:VERSION" }
+            if ($v.FileVersion -ne "$core.0") { throw "$dll file version $($v.FileVersion), expected $core.0" }
           }
       # No token is touched: help, a usage error (exit 2) and a module that does not exist (exit 3).
       - name: smoke test eid-token-check

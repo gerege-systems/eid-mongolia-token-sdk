@@ -74,6 +74,7 @@ jobs:
     with:
       release: true
       artifact-name: eid-token-test-macos-release-dry-run
+      version: 0.0.0-dry-run.1
 
   verifier-linux:
     runs-on: ubuntu-24.04

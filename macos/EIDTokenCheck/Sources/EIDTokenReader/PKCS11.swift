@@ -117,6 +117,7 @@ final class PKCS11Module {
 
     /// C_Initialize → body → C_Finalize: OpenSC sees tokens plugged in since the last call.
     func withLibrary<T>(_ body: () throws -> T) throws -> T {
+        OpenSCConfig.touch()   // OpenSC reads its config here; keep the folder from looking abandoned
         let rv = initialize(nil)
         guard rv == Self.CKR_OK || rv == Self.CKR_CRYPTOKI_ALREADY_INITIALIZED else {
             throw TokenError.pkcs11("C_Initialize", rv)
