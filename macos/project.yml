@@ -14,6 +14,7 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.10"
+    # Development version. A release build overrides it from the tag (xcodebuild MARKETING_VERSION=..., token-sdk-macos.yml).
     MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
     # Ad-hoc signed (not notarized). With a Developer ID identity, turn ENABLE_HARDENED_RUNTIME on — bundle_opensc.sh
@@ -62,7 +63,7 @@ targets:
       properties:
         CFBundleDisplayName: eID Token Test
         CFBundleName: eID Token Test
-        CFBundleShortVersionString: "0.2.0"
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "1"
         LSMinimumSystemVersion: "14.0"
         LSApplicationCategoryType: public.app-category.developer-tools

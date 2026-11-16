@@ -20,7 +20,6 @@
     <SelfContained>true</SelfContained>
     <PublishTrimmed>false</PublishTrimmed>
     <PublishReadyToRun>false</PublishReadyToRun>
-    <Version>0.2.0</Version>
     <!-- No debug symbols from NuGet packages in the published folder (the package check forbids *.pdb). -->
     <CopyDebugSymbolFilesFromPackages>false</CopyDebugSymbolFilesFromPackages>
   </PropertyGroup>

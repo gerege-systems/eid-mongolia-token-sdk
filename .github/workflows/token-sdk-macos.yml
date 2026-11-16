@@ -35,6 +35,12 @@ on:
       artifact-name:
         type: string
         default: eid-token-test-macos
+      # The release tag without the leading v (x.y.z or x.y.z-pre). Empty: the development version from
+      # macos/project.yml (MARKETING_VERSION). Set: the app gets exactly this CFBundleShortVersionString and the run
+      # fails if the built Info.plist differs.
+      version:
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -51,6 +57,7 @@ jobs:
       GIT_CONFIG_NOSYSTEM: '1'
       XCODEGEN_VERSION: 2.45.4
       XCODEGEN_SHA256: 090ec29491aad50aec10631bf6e62253fed733c50f3aab0f5ffc86bc170bdbef
+      VERSION: ${{ inputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -138,11 +145,16 @@ jobs:
         run: swift test --parallel --scratch-path "$CI_CACHE/token-sdk-check-build"
       - name: build app (Release, ad-hoc)
         run: |
+          version_args=()
+          if [ -n "$VERSION" ]; then
+            [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || { echo "::error::not a release version: $VERSION"; exit 1; }
+            version_args=("MARKETING_VERSION=$VERSION")
+          fi
           xcodebuild -project EIDTokenTest.xcodeproj -scheme EIDTokenTest -configuration Release \
             -destination 'generic/platform=macOS' \
             -derivedDataPath "$CI_CACHE/DerivedData-token-sdk" \
             -clonedSourcePackagesDirPath "$CI_CACHE/SourcePackages" \
-            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= build 2>&1 | tee "$RUNNER_TEMP/build.log" | grep -E "(error|warning: .*deprecated)|\*\* BUILD" || true
+            CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= ${version_args[@]+"${version_args[@]}"} build 2>&1 | tee "$RUNNER_TEMP/build.log" | grep -E "(error|warning: .*deprecated)|\*\* BUILD" || true
           grep -q '\*\* BUILD SUCCEEDED \*\*' "$RUNNER_TEMP/build.log" || {
             echo "::error::xcodebuild build failed"; grep -E "error:" "$RUNNER_TEMP/build.log" | head -40; tail -n 60 "$RUNNER_TEMP/build.log"; exit 1; }
       # The bundle must hold the module and nothing of a provisioning toolset.
@@ -159,6 +171,14 @@ jobs:
             echo "::error::provisioning tools/profiles found in the bundle"; exit 1
           fi
           codesign --verify --deep --strict "$app"
+          # A release must carry the version of its tag; any build must have the build setting expanded.
+          shown="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          echo "CFBundleShortVersionString=$shown (tag version: ${VERSION:-none})"
+          if [ -n "$VERSION" ]; then
+            [ "$shown" = "$VERSION" ] || { echo "::error::the app reports version $shown, the tag says $VERSION"; exit 1; }
+          else
+            case "$shown" in ''|*'$('*) echo "::error::CFBundleShortVersionString is not expanded: $shown"; exit 1 ;; esac
+          fi
           lipo -info "$app/Contents/Frameworks/opensc-pkcs11.so"
           echo "APP_PATH=$app" >> "$GITHUB_ENV"
       # The built app starts on this runner, stays up and renders its main window: "main page loaded" in its log,

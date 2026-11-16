@@ -221,6 +221,9 @@ public final class TokenReader: TokenSource {
 /// OpenSC reads its configuration from `OPENSC_CONF`; without it, it would read the path compiled into the module
 /// (or an OpenSC installed on the same computer). A minimal private config (defaults only, nothing secret) is
 /// written once per process. Call before the module is loaded. A value the user already set is kept.
+///
+/// The folder lives as long as the process: it is removed at normal exit (`atexit`; each module call has run its
+/// C_Finalize by then), and folders of runs that crashed are swept at the next start once they are 24 hours old.
 public enum OpenSCConfig {
     public static func isolate() {
         if let set = ProcessInfo.processInfo.environment["OPENSC_CONF"], !set.isEmpty { return }
@@ -228,14 +231,74 @@ public enum OpenSCConfig {
         setenv("OPENSC_CONF", path, 1)
     }
 
+    static let directoryPrefix = "eid-token-test-"
+    static let configName = "opensc.conf"
+
+    private static var ownDirectory: URL?
+
+    /// Sweeps old folders, creates this process's folder and arranges its removal at exit.
     private static let configPath: Result<String, Error> = Result {
-        let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("eid-token-test-\(UUID().uuidString)", isDirectory: true)
+        let root = FileManager.default.temporaryDirectory
+        sweepStale(in: root, olderThan: 24 * 60 * 60, now: Date())
+        let dir = try createConfigDirectory(in: root)
+        ownDirectory = dir
+        atexit { OpenSCConfig.removeOwnDirectory() }
+        return dir.appendingPathComponent(configName).path
+    }
+
+    /// `<root>/eid-token-test-<uuid>/opensc.conf` (0700 / 0600).
+    static func createConfigDirectory(in root: URL) throws -> URL {
+        let dir = root.appendingPathComponent(directoryPrefix + UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false,
                                                 attributes: [.posixPermissions: 0o700])
-        let file = dir.appendingPathComponent("opensc.conf")
+        let file = dir.appendingPathComponent(configName)
         try "app default {\n    debug = 0;\n}\n".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        return file.path
+        return dir
+    }
+
+    /// Removes the folder this process created, if any. Best effort: never throws.
+    static func removeOwnDirectory() {
+        guard let dir = ownDirectory else { return }
+        ownDirectory = nil
+        removeConfigDirectory(dir)
+    }
+
+    /// Removes `dir` only when it is a real folder (not a symlink) holding nothing but a regular, non-symlink
+    /// `opensc.conf`. Never recursive; never throws. Returns whether the folder was removed.
+    @discardableResult
+    static func removeConfigDirectory(_ dir: URL) -> Bool {
+        let fm = FileManager.default
+        guard isNode(dir, ofType: S_IFDIR), let names = try? fm.contentsOfDirectory(atPath: dir.path),
+              names.count <= 1 else { return false }
+        if let name = names.first {
+            let file = dir.appendingPathComponent(name)
+            guard name == configName, isNode(file, ofType: S_IFREG), (try? fm.removeItem(at: file)) != nil else {
+                return false
+            }
+        }
+        return rmdir(dir.path) == 0   // fails if anything is left inside
+    }
+
+    /// Deletes `<root>/eid-token-test-<UUID>` folders (the exact name `createConfigDirectory` makes) last modified at
+    /// least `age` seconds before `now` that hold only the expected `opensc.conf`. Only directly inside `root`;
+    /// symlinks and anything unexpected are left alone. Best effort: never throws.
+    static func sweepStale(in root: URL, olderThan age: TimeInterval, now: Date) {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: root.path) else { return }
+        for name in names where name.hasPrefix(directoryPrefix) {
+            let id = String(name.dropFirst(directoryPrefix.count))
+            guard UUID(uuidString: id)?.uuidString == id else { continue }
+            let dir = root.appendingPathComponent(name, isDirectory: true)
+            var st = stat()
+            guard lstat(dir.path, &st) == 0, st.st_mode & S_IFMT == S_IFDIR,
+                  now.timeIntervalSince1970 - TimeInterval(st.st_mtimespec.tv_sec) >= age else { continue }
+            removeConfigDirectory(dir)
+        }
+    }
+
+    /// `lstat`: a symlink is never a directory or a regular file here.
+    private static func isNode(_ url: URL, ofType type: mode_t) -> Bool {
+        var st = stat()
+        return lstat(url.path, &st) == 0 && st.st_mode & S_IFMT == type
     }
 }

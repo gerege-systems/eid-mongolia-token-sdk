@@ -15,7 +15,7 @@ public partial class App : Application
     public App()
     {
         UnhandledException += OnUnhandledException;
-        StartupLog.Write("starting " + typeof(App).Assembly.GetName().Version);
+        StartupLog.Write("starting " + StartupLog.ProductVersion);
         // Before anything loads opensc-pkcs11.dll (it reads OPENSC_CONF once, at load).
         OpenScModule.IsolateConfig();
         try
