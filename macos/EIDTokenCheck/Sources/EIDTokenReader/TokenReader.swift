@@ -223,7 +223,8 @@ public final class TokenReader: TokenSource {
 /// written once per process. Call before the module is loaded. A value the user already set is kept.
 ///
 /// The folder lives as long as the process: it is removed at normal exit (`atexit`; each module call has run its
-/// C_Finalize by then), and folders of runs that crashed are swept at the next start once they are 24 hours old.
+/// C_Finalize by then). Folders of runs that crashed are swept at the next start once they are 7 days old; a running
+/// process refreshes its folder's modification time on every module call, so a live process is never swept.
 public enum OpenSCConfig {
     public static func isolate() {
         if let set = ProcessInfo.processInfo.environment["OPENSC_CONF"], !set.isEmpty { return }
@@ -233,13 +234,15 @@ public enum OpenSCConfig {
 
     static let directoryPrefix = "eid-token-test-"
     static let configName = "opensc.conf"
+    /// A folder not touched for this long belongs to a process that is gone.
+    static let staleAge: TimeInterval = 7 * 24 * 60 * 60
 
     private static var ownDirectory: URL?
 
     /// Sweeps old folders, creates this process's folder and arranges its removal at exit.
     private static let configPath: Result<String, Error> = Result {
         let root = FileManager.default.temporaryDirectory
-        sweepStale(in: root, olderThan: 24 * 60 * 60, now: Date())
+        sweepStale(in: root, olderThan: staleAge, now: Date())
         let dir = try createConfigDirectory(in: root)
         ownDirectory = dir
         atexit { OpenSCConfig.removeOwnDirectory() }
@@ -264,20 +267,38 @@ public enum OpenSCConfig {
         removeConfigDirectory(dir)
     }
 
-    /// Removes `dir` only when it is a real folder (not a symlink) holding nothing but a regular, non-symlink
-    /// `opensc.conf`. Never recursive; never throws. Returns whether the folder was removed.
+    /// Refreshes the modification time of this process's folder (cheap), so another instance's sweep skips it.
+    static func touch() {
+        if let dir = ownDirectory { touch(dir) }
+    }
+
+    static func touch(_ dir: URL) {
+        _ = utimes(dir.path, nil)
+    }
+
+    /// Removes `dir` only when it is a real folder (not a symlink) holding nothing but a regular `opensc.conf`
+    /// (not a symlink, not a folder); otherwise nothing is changed. Never recursive and never follows a link: the
+    /// folder is opened with O_NOFOLLOW, the file is checked with fstatat(AT_SYMLINK_NOFOLLOW) and removed with
+    /// unlinkat(…, 0) (cannot remove a folder), the folder with unlinkat(AT_REMOVEDIR) (fails if anything is left).
+    /// Never throws. Returns whether the folder was removed.
     @discardableResult
     static func removeConfigDirectory(_ dir: URL) -> Bool {
-        let fm = FileManager.default
-        guard isNode(dir, ofType: S_IFDIR), let names = try? fm.contentsOfDirectory(atPath: dir.path),
-              names.count <= 1 else { return false }
-        if let name = names.first {
-            let file = dir.appendingPathComponent(name)
-            guard name == configName, isNode(file, ofType: S_IFREG), (try? fm.removeItem(at: file)) != nil else {
-                return false
-            }
+        let name = dir.lastPathComponent
+        let parentFd = open(dir.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY)
+        guard parentFd >= 0 else { return false }
+        defer { close(parentFd) }
+        let fd = openat(parentFd, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)   // a symlink fails with ELOOP
+        guard fd >= 0 else { return false }
+        defer { close(fd) }
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path), names.count <= 1 else {
+            return false
         }
-        return rmdir(dir.path) == 0   // fails if anything is left inside
+        if let only = names.first {
+            var st = stat()
+            guard only == configName, fstatat(fd, configName, &st, AT_SYMLINK_NOFOLLOW) == 0,
+                  st.st_mode & S_IFMT == S_IFREG, unlinkat(fd, configName, 0) == 0 else { return false }
+        }
+        return unlinkat(parentFd, name, AT_REMOVEDIR) == 0
     }
 
     /// Deletes `<root>/eid-token-test-<UUID>` folders (the exact name `createConfigDirectory` makes) last modified at
@@ -294,11 +315,5 @@ public enum OpenSCConfig {
                   now.timeIntervalSince1970 - TimeInterval(st.st_mtimespec.tv_sec) >= age else { continue }
             removeConfigDirectory(dir)
         }
-    }
-
-    /// `lstat`: a symlink is never a directory or a regular file here.
-    private static func isNode(_ url: URL, ofType type: mode_t) -> Bool {
-        var st = stat()
-        return lstat(url.path, &st) == 0 && st.st_mode & S_IFMT == type
     }
 }

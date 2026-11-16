@@ -64,7 +64,7 @@ jobs:
         run: |
           $props = ''
           if ($env:VERSION -ne '') {
-            if ($env:VERSION -notmatch '^(\d+\.\d+\.\d+)(-[0-9A-Za-z.]+)?$') { throw "not a release version: $env:VERSION" }
+            if ($env:VERSION -notmatch '^(\d+\.\d+\.\d+)(-[0-9A-Za-z.]+)?\z') { throw "not a release version: $env:VERSION" }
             $core = $Matches[1]
             $props = "-p:Version=$env:VERSION -p:InformationalVersion=$env:VERSION -p:AssemblyVersion=$core.0 -p:FileVersion=$core.0"
           }

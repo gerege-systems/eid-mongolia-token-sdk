@@ -36,6 +36,7 @@ public sealed class Pkcs11TokenReader : ITokenSource, IDisposable
     /// Loads and initialises the module (C_Initialize). Throws <see cref="TokenModuleException"/>.
     public static Pkcs11TokenReader Load(string modulePath)
     {
+        OpenScModule.Touch();   // the config folder is in use: another instance's sweep must skip it
         if (!File.Exists(modulePath))
             throw new TokenModuleException("PKCS#11 модуль олдсонгүй: " + modulePath);
         try

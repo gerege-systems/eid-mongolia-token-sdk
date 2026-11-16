@@ -15,6 +15,9 @@ public static class OpenScModule
     /// Exactly what <see cref="CreateConfigDir"/> makes: the prefix and a 32-digit lowercase hex GUID.
     private static readonly Regex DirName = new("^eid-token-test-[0-9a-f]{32}$", RegexOptions.CultureInvariant);
 
+    /// A folder not touched for this long belongs to a process that is gone.
+    internal static readonly TimeSpan StaleAge = TimeSpan.FromDays(7);
+
     private static readonly object Gate = new();
     private static string? _ownDir;
 
@@ -27,15 +30,18 @@ public static class OpenScModule
     /// config (Program Files) would be read by our copy of the module.
     ///
     /// The folder is removed when the process exits normally (by then the readers are disposed, i.e. C_Finalize has
-    /// run); folders of runs that crashed are swept at the next start once they are older than 24 hours.
+    /// run). Folders of runs that crashed are swept at the next start once they are older than 7 days; a running
+    /// process refreshes its folder's time on every <see cref="Touch()"/> (each module load), so it is never swept.
+    /// The sweep and the exit cleanup are housekeeping and can never stop the start; creating the config is not
+    /// housekeeping and still throws.
     public static void IsolateConfig()
     {
         if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OPENSC_CONF"))) return;
         var root = Path.GetTempPath();
-        SweepStale(root, TimeSpan.FromHours(24), DateTime.UtcNow);
+        SweepStale(root, StaleAge, DateTime.UtcNow);   // never throws
         var dir = CreateConfigDir(root);
         lock (Gate) _ownDir = dir;
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => RemoveOwnDir();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => RemoveOwnDir();   // RemoveOwnDir never throws
         Environment.SetEnvironmentVariable("OPENSC_CONF", Path.Combine(dir, ConfName));
     }
 
@@ -48,6 +54,26 @@ public static class OpenScModule
         return dir;
     }
 
+    /// Refreshes the folder's time (cheap), so another instance's sweep skips it. Best effort: never throws.
+    public static void Touch()
+    {
+        string? dir;
+        lock (Gate) dir = _ownDir;
+        if (dir is not null) Touch(dir);
+    }
+
+    internal static void Touch(string dir)
+    {
+        try
+        {
+            Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow);
+        }
+        catch (Exception)
+        {
+            // housekeeping: whatever goes wrong here must never fail a login check
+        }
+    }
+
     /// Removes the folder this process created, if any. Best effort: never throws.
     internal static void RemoveOwnDir()
     {
@@ -57,7 +83,7 @@ public static class OpenScModule
             dir = _ownDir;
             _ownDir = null;
         }
-        if (dir is not null) RemoveConfigDir(dir);
+        if (dir is not null) RemoveConfigDir(dir);   // never throws
     }
 
     /// Deletes `dir` only when it holds nothing but a regular `opensc.conf` and is not a link. Never recursive;
@@ -79,8 +105,9 @@ public static class OpenScModule
             info.Delete(false);
             return true;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception)
         {
+            // cleanup is best effort: a folder that cannot be inspected or removed is left behind, nothing more
             return false;
         }
     }
@@ -100,15 +127,15 @@ public static class OpenScModule
                     if (nowUtc - candidate.LastWriteTimeUtc < maxAge) continue;
                     RemoveConfigDir(candidate.FullName);
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                catch (Exception)
                 {
                     // one folder that cannot be inspected does not stop the sweep
                 }
             }
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception)
         {
-            // the sweep is housekeeping; it never fails a start
+            // the sweep is housekeeping (an unreadable or invalid temp root included); it never fails a start
         }
     }
 

@@ -17,7 +17,7 @@ final class OpenSCConfigTests: XCTestCase {
         try? fm.removeItem(at: root)
     }
 
-    private var later: Date { Date().addingTimeInterval(3 * day) }
+    private var later: Date { Date().addingTimeInterval(8 * day) }
 
     func testCreatedFolderHoldsOnlyTheConfigAndIsRemoved() throws {
         let dir = try OpenSCConfig.createConfigDirectory(in: root)
@@ -39,13 +39,13 @@ final class OpenSCConfigTests: XCTestCase {
 
     func testSweepRemovesOldMatchingFolders() throws {
         let dir = try OpenSCConfig.createConfigDirectory(in: root)
-        OpenSCConfig.sweepStale(in: root, olderThan: day, now: later)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: later)
         XCTAssertFalse(fm.fileExists(atPath: dir.path))
     }
 
     func testSweepLeavesRecentFolders() throws {
         let dir = try OpenSCConfig.createConfigDirectory(in: root)
-        OpenSCConfig.sweepStale(in: root, olderThan: day, now: Date())
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: Date())
         XCTAssertTrue(fm.fileExists(atPath: dir.path))
     }
 
@@ -60,7 +60,7 @@ final class OpenSCConfigTests: XCTestCase {
         try fm.removeItem(at: confIsFolder.appendingPathComponent("opensc.conf"))
         try fm.createDirectory(at: confIsFolder.appendingPathComponent("opensc.conf"), withIntermediateDirectories: false)
 
-        OpenSCConfig.sweepStale(in: root, olderThan: day, now: later)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: later)
 
         for dir in [extra, renamed, confIsFolder] {
             XCTAssertTrue(fm.fileExists(atPath: dir.path), dir.lastPathComponent)
@@ -76,7 +76,7 @@ final class OpenSCConfigTests: XCTestCase {
             try fm.createDirectory(at: dir, withIntermediateDirectories: false)
             try "x".write(to: dir.appendingPathComponent("opensc.conf"), atomically: true, encoding: .utf8)
         }
-        OpenSCConfig.sweepStale(in: root, olderThan: day, now: later)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: later)
         for name in names {
             XCTAssertTrue(fm.fileExists(atPath: root.appendingPathComponent(name).path), name)
         }
@@ -90,8 +90,53 @@ final class OpenSCConfigTests: XCTestCase {
         let link = root.appendingPathComponent("eid-token-test-\(UUID().uuidString)")
         try fm.createSymbolicLink(at: link, withDestinationURL: target)
 
-        OpenSCConfig.sweepStale(in: root, olderThan: day, now: later)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: later)
 
+        XCTAssertTrue(fm.fileExists(atPath: target.appendingPathComponent("opensc.conf").path))
+        XCTAssertNotNil(try? fm.destinationOfSymbolicLink(atPath: link.path))
+    }
+
+    func testSweepThresholdIsSevenDays() throws {
+        XCTAssertEqual(OpenSCConfig.staleAge, 7 * day)
+        let dir = try OpenSCConfig.createConfigDirectory(in: root)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: Date().addingTimeInterval(6 * day))
+        XCTAssertTrue(fm.fileExists(atPath: dir.path))
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: Date().addingTimeInterval(8 * day))
+        XCTAssertFalse(fm.fileExists(atPath: dir.path))
+    }
+
+    func testTouchKeepsALiveFolderFromBeingSwept() throws {
+        let dir = try OpenSCConfig.createConfigDirectory(in: root)
+        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(-10 * day)], ofItemAtPath: dir.path)
+        OpenSCConfig.touch(dir)
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: Date())
+        XCTAssertTrue(fm.fileExists(atPath: dir.path))
+    }
+
+    func testConfigThatIsASymlinkLeavesEverythingAlone() throws {
+        let outside = root.appendingPathComponent("outside.txt")
+        try "x".write(to: outside, atomically: true, encoding: .utf8)
+        let dir = try OpenSCConfig.createConfigDirectory(in: root)
+        let conf = dir.appendingPathComponent("opensc.conf")
+        try fm.removeItem(at: conf)
+        try fm.createSymbolicLink(at: conf, withDestinationURL: outside)
+
+        XCTAssertFalse(OpenSCConfig.removeConfigDirectory(dir))
+        OpenSCConfig.sweepStale(in: root, olderThan: OpenSCConfig.staleAge, now: later)
+
+        XCTAssertTrue(fm.fileExists(atPath: outside.path))
+        XCTAssertNotNil(try? fm.destinationOfSymbolicLink(atPath: conf.path))
+        XCTAssertTrue(fm.fileExists(atPath: dir.path))
+    }
+
+    func testDirectoryReplacedByASymlinkIsNotFollowed() throws {
+        let target = root.appendingPathComponent("real-target", isDirectory: true)
+        try fm.createDirectory(at: target, withIntermediateDirectories: false)
+        try "x".write(to: target.appendingPathComponent("opensc.conf"), atomically: true, encoding: .utf8)
+        let link = root.appendingPathComponent("eid-token-test-\(UUID().uuidString)")
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+
+        XCTAssertFalse(OpenSCConfig.removeConfigDirectory(link))
         XCTAssertTrue(fm.fileExists(atPath: target.appendingPathComponent("opensc.conf").path))
         XCTAssertNotNil(try? fm.destinationOfSymbolicLink(atPath: link.path))
     }

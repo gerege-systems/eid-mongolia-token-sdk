@@ -7,9 +7,13 @@
   `CFBundleShortVersionString` = `$(MARKETING_VERSION)`, бүтээсний дараа plist-ийг tag-тай тулгана. Хөгжүүлэлтийн
   анхдагч хувилбар платформ бүрд нэг газар: `windows/Directory.Build.props`, `macos/project.yml`. Апп `starting <хувилбар>`
   мөрөндөө одоо `AssemblyInformationalVersion`-ийг (tag-тай ижил) бичнэ. (2) `eid-token-test-<guid>` түр хавтсыг процесс
-  хэвийн дуусахад устгана (Windows: `ProcessExit`, macOS: `atexit`), мөн эхлэхдээ 24 цагаас хуучирсан, нэр нь яг загвартай,
-  зөвхөн `opensc.conf` агуулсан хавтсыг (symlink / reparse point-ыг дагахгүй, зөвхөн temp-ийн шууд хүүхэд) устгана. Бүгд
-  best effort: алдаа гарвал шалгалтыг унагахгүй.
+  хэвийн дуусахад устгана (Windows: `ProcessExit`, macOS: `atexit`), мөн эхлэхдээ 7 хоногоос хуучирсан, нэр нь яг загвартай,
+  зөвхөн `opensc.conf` агуулсан хавтсыг (symlink / junction-ыг дагахгүй, зөвхөн temp-ийн шууд хүүхэд) устгана. Ажиллаж буй
+  процесс модуль ачаалах / дуудах бүрд хавтсынхаа өөрчлөгдсөн цагийг шинэчилдэг тул амьд процессын хавтсыг хоёр дахь
+  процесс устгахгүй. macOS-д устгал нь `openat(O_NOFOLLOW)` + `unlinkat` (давтахгүй, link дагахгүй); `opensc.conf` нь
+  symlink / хавтас бол юуг ч хөндөхгүй. Бүгд best effort: цэвэрлэгээ, sweep-ийн ямар ч алдаа (Windows-д бүх exception)
+  аппыг эхлүүлэхэд саад болохгүй; харин тохиргоог үүсгэж чадахгүй бол өмнөх шигээ алдаа өгнө. Release-ийн хувилбарын
+  regex-ийн төгсгөл `\z` (Windows).
 - **Яагаад:** v0.1.0 release `starting 0.2.0.0` гэж лог бичсэн (төслийн файлд 0.2.0 хатуу бичигдсэн байсан); Windows-ийн
   тест PC дээр 52 түр хавтас үлдсэн.
 - **Хаана:** `.github/workflows/{release,token-sdk-windows,token-sdk-macos,ci}.yml`, `windows/Directory.Build.props`,
