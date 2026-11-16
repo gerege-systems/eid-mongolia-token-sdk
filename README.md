@@ -98,16 +98,16 @@ Apple-ийн платформын код (Security.framework) — сервер �
    (эсвэл [Releases](https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest) хуудасны «Assets» хэсгээс
    `eid-token-test-windows-x64.zip`). Ногоон «Code → Download ZIP» **биш**.
 2. **Задлахаас ӨМНӨ:** татсан zip дээр баруун товч → **Properties** → доод хэсгийн **«Unblock»**-ийг чагтална → **OK**.
-   PowerShell-ээр: `Unblock-File .\eid-token-test-windows-x64.zip`. Unblock хийсэн zip-ээс задалсан файлууд бүгд
-   unblock-той гарна.
-3. Zip дээр баруун товч → **Extract All…** → **Extract**.
-4. Zip дотор `eid-token-test-windows-x64` хавтас бий — түүнийг нээнэ. Exe-ийн зам:
-   `<задалсан газар>\eid-token-test-windows-x64\eid-token-test.exe`.
+   PowerShell-ээр: `Unblock-File .\eid-token-test-windows-x64.zip`. Unblock хийсэн zip-ээс задалсан файлд
+   Mark-of-the-Web байхгүй тул анхааруулгын цонх гарахгүй.
+3. Zip дээр баруун товч → **Extract All…** → **Extract**. `eid-token-test-windows-x64` нэртэй хавтас үүснэ.
+4. Тэр хавтсыг нээ — дотор нь **ижил нэртэй** `eid-token-test-windows-x64` хавтас дахин бий, түүнийг ч нээ. Exe-ийн зам:
+   `<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-test.exe`.
 5. `eid-token-test.exe` дээр давхар дарна. Хажууд нь олон `.dll` файл байгаа — нэрээр эрэмбэл, эсвэл «Type» нь
    «Application» файлыг ол.
-6. Дараах хоёр цонхны аль нэг нь гарч болно (exe code-signing гарын үсэггүй):
-   - «Windows protected your PC» (SmartScreen) → **More info** → **Run anyway**;
-   - «Open File - Security Warning» («The publisher could not be verified») → **Run**.
+6. «Unblock»-ийг алгассан бол «Open File - Security Warning» («The publisher could not be verified») цонх гарна →
+   **Run**. Оронд нь «Windows protected your PC» (SmartScreen) цонх гарч ч болно → **More info** → **Run anyway**.
+   (Exe code-signing гарын үсэггүй.)
 
 **Амжилттай бол:** «eID Token Test» цонх гурван хэсэгтэй нээгдэнэ ([доор](#цонхны-гурван-хэсэг-хоёр-платформд-ижил));
 exe-ийн хажуудах `eid-token-test.log`-д `main page loaded` мөр бичигдэнэ.
@@ -215,7 +215,11 @@ Settings → Privacy & Security → «Open Anyway». `eid-token-check`-ийн п
 `eid-token-check` тусад нь суулгахгүй — хоёр zip-д апптай хамт ирнэ. Дээрх A эсвэл B замаар zip-ээ авч задлаад
 тэр хавтсаас ажиллуулна ([§7](#7-command-line-хэрэгсэл-eid-token-check)):
 
-- Windows: `eid-token-test-windows-x64\eid-token-check\eid-token-check.exe` (хажуудаа `opensc-pkcs11.dll`);
+- Windows: `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\` хавтас —
+  `eid-token-check\eid-token-check.exe` (хажуудаа `opensc-pkcs11.dll`). Windows B-ээр задалсан бол
+  `.\eid-token-test-windows-x64\eid-token-check\eid-token-check.exe`; Windows A-аар (Extract All) задалсан бол
+  `eid-token-test-windows-x64\` нэг түвшин нэмэгдэнэ:
+  `<задалсан газар>\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-check\eid-token-check.exe`;
 - macOS: `eid-token-test-macos/eid-token-check/eid-token-check` (хажуудаа `opensc-pkcs11.so`, `libopensc.12.dylib`,
   `trust/`).
 
@@ -666,8 +670,9 @@ http нь зөвхөн тээвэр) — firewall / proxy `ocsp.eidmongolia.mn`,
 
 Апптай **ижил** уншигч, нэвтрэх урсгал, шалгагчийн кодоор ажиллана (GUI-гүй машин дээр, жишээ нь алсаас токентой
 компьютерт шалгах). macOS: zip-ийн `eid-token-check/eid-token-check` (хажуудаа `opensc-pkcs11.so`, `libopensc.12.dylib`,
-`trust/`); Windows: `eid-token-test-windows-x64\eid-token-check\eid-token-check.exe` (хажуудаа `opensc-pkcs11.dll`; итгэлийн гэрчилгээ exe-д
-шингэсэн).
+`trust/`); Windows: `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\eid-token-check.exe` (хажуудаа
+`opensc-pkcs11.dll`; итгэлийн гэрчилгээ exe-д шингэсэн; бүтэн зам —
+[Command-line хэрэгсэл](#command-line-хэрэгсэл-суулгах-шаардлагагүй)).
 
 ```
 eid-token-check --module <opensc-pkcs11 зам> [--serial <токены серийн дугаар>] [--json]
@@ -703,7 +708,9 @@ eid-token-check --module <зам> --serial <серийн дугаар> [--origin
 ./eid-token-check --module ./opensc-pkcs11.so --serial 0123456789ABCDEF --origin login.example.mn --login --json < pin.txt
 ```
 
-Windows (PowerShell, задалсан `eid-token-test-windows-x64\eid-token-check\` хавтаснаас):
+Windows (PowerShell): `eid-token-test.exe`-тэй нэг хавтсанд байгаа `eid-token-check\` хавтаснаас. Доорх `cd` нь
+Windows B-ээр задалсан хавтаснаас; Windows A-аар (Extract All) задалсан бол `eid-token-test-windows-x64\` нэг түвшин
+нэмэгдэнэ (`cd .\eid-token-test-windows-x64\eid-token-test-windows-x64\eid-token-check`).
 
 ```powershell
 cd .\eid-token-test-windows-x64\eid-token-check
