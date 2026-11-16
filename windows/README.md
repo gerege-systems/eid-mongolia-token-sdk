@@ -1,9 +1,24 @@
 # eID Token Test — Windows
 
+## Хурдан эхлэх
+
+1. Татна: <https://github.com/gerege-systems/eid-mongolia-token-sdk/releases/latest/download/eid-token-test-windows-x64.zip>
+   (ногоон «Code → Download ZIP» биш — тэр нь зөвхөн эх код, exe-гүй).
+2. **Задлахаас ӨМНӨ:** zip дээр баруун товч → Properties → «Unblock»-ийг чагтлах → OK.
+3. Zip дээр баруун товч → Extract All → задалсан `eid-token-test-windows-x64` хавтсыг нээнэ.
+4. `eid-token-test.exe` дээр давхар дарна (хажууд нь олон `.dll` — «Type» нь «Application» файл).
+5. «Windows protected your PC» гарвал → More info → Run anyway; «Open File - Security Warning» гарвал → Run.
+
+Дэлгэрэнгүй (PowerShell-ээр татах, түгээмэл саад): [`README.md` §3 «Windows A»](../README.md#windows-a-браузераар-татах)
+(zip-д `README.md`).
+
 Бүрэн гарын авлага (нэвтрэлтийн дүрэм, модуль ашиглах, command-line хэрэгсэл, алдаа засах, лиценз) нь репогийн үндсэн
-[`README.md`](../README.md)-д (zip-д `README.md`). Энэ файл зөвхөн Windows-ийн багцын бүтэц ба эх кодын байршлыг заана.
+[`README.md`](../README.md)-д (zip-д `README.md`). Энэ файл Windows-ийн хурдан эхлэл, багцын бүтэц ба эх кодын байршлыг заана.
 
 ## Zip (`eid-token-test-windows-x64.zip`, GitHub Releases)
+
+Замууд нь zip доторх `eid-token-test-windows-x64\` хавтастай харьцангуй (жишээ нь
+`eid-token-test-windows-x64\eid-token-test.exe`).
 
 | Зам | Юу вэ |
 |---|---|
